@@ -1329,31 +1329,119 @@ const PAY_PLANS = {
   video_letra: { cents: 2990, name: 'Musica + Video personalizado com foto - Historias Cantadas' },
 };
 
-// Cria o link de checkout do InfinitePay pra um pedido
+// ═══════════════════════════════════════════════════════════════
+// PAGAMENTO via AbacatePay — gera PIX dinâmico com confirmação automática
+// (substitui InfinitePay que era do amigo)
+// ═══════════════════════════════════════════════════════════════
+const ABACATEPAY_API_KEY = process.env.ABACATEPAY_API_KEY || '';
+const ABACATEPAY_API = 'https://api.abacatepay.com/v2';
+
 app.post('/api/pay/create', async (req, res) => {
   try {
-    if (!INFINITEPAY_HANDLE) return res.status(503).json({ error: 'pagamento ainda nao configurado (handle)' });
+    if (!ABACATEPAY_API_KEY) return res.status(503).json({ error: 'AbacatePay nao configurado (ABACATEPAY_API_KEY)' });
     const { orderId, plan } = req.body || {};
     if (!_isUuid(orderId)) return res.status(400).json({ error: 'orderId invalido' });
     const p = PAY_PLANS[plan];
     if (!p) return res.status(400).json({ error: 'plano invalido' });
-    const cents = p.cents;   // <-- PREÇO do servidor, imutável pelo cliente
-    const name = p.name;
-    const items = JSON.stringify([{ name, price: cents, quantity: 1 }]);
-    const redirect = SITE_URL + '/?pago=1&order=' + encodeURIComponent(orderId);
-    const url = 'https://checkout.infinitepay.io/' + INFINITEPAY_HANDLE +
-      '?items=' + encodeURIComponent(items) +
-      '&order_nsu=' + encodeURIComponent(orderId) +
-      '&redirect_url=' + encodeURIComponent(redirect);
-    console.log('[/api/pay/create] checkout p/', orderId, '(', cents, 'centavos )');
-    // amarra um bill_id pra ENTREGA do n8n achar o pedido depois (mesmo caminho do AbacatePay)
-    // plano PREMIUM (completa): marca pra o vídeo-letra (brinde) NÃO gerar — o vídeo dele é o PERSONALIZADO (com foto)
-    const patchPay = { bill_id: 'ip_' + orderId };
+    const cents = p.cents;
+
+    // Cria cobrança PIX na AbacatePay
+    const ar = await axios.post(`${ABACATEPAY_API}/transparents/create`, {
+      method: 'PIX',
+      data: {
+        amount: cents,
+        expiresIn: 60 * 60, // 1h
+        description: p.name,
+        externalId: orderId,
+        metadata: { order_id: orderId, plan },
+      },
+    }, {
+      headers: { Authorization: `Bearer ${ABACATEPAY_API_KEY}`, 'Content-Type': 'application/json' },
+      timeout: 20000,
+    });
+
+    const data = ar.data?.data;
+    if (!data?.id || !data?.brCode) {
+      console.error('[/api/pay/create] resposta inesperada:', ar.data);
+      return res.status(502).json({ error: 'falha ao gerar PIX' });
+    }
+
+    console.log('[/api/pay/create] AbacatePay PIX criado:', data.id, 'p/', orderId, '(', cents, 'cents)');
+
+    // grava na order pra webhook + polling acharem
+    const patchPay = {
+      bill_id: data.id,
+      abacate_charge_id: data.id,
+      abacate_brcode: data.brCode,
+      abacate_qrcode: data.brCodeBase64,
+      abacate_status: 'PENDING',
+      payment_method: 'pix',
+      payment_amount: cents / 100,
+      plan,
+    };
     if (plan === 'completa') patchPay.video_upsell_status = 'pending_photo';
-    try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (_) {}
-    res.json({ ok: true, checkout_url: url });
+    try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (e) { console.error('[/api/pay/create] patch err:', e.message); }
+
+    res.json({
+      ok: true,
+      paymentId: data.id,
+      brCode: data.brCode,
+      brCodeBase64: data.brCodeBase64,
+      amount: cents,
+      expiresAt: data.expiresAt,
+    });
   } catch (e) {
-    console.error('[/api/pay/create] erro:', e.message);
+    console.error('[/api/pay/create] erro:', e.response?.data || e.message);
+    res.status(500).json({ error: 'erro interno', detail: String(e.response?.data?.error || e.message) });
+  }
+});
+
+// Status do pagamento — frontend faz polling pra detectar quando paga
+app.get('/api/pay/status', async (req, res) => {
+  try {
+    const orderId = req.query.orderId;
+    if (!_isUuid(orderId)) return res.status(400).json({ error: 'orderId invalido' });
+    const rows = await supaFetch('GET', `orders?id=eq.${orderId}&select=status,abacate_status,abacate_charge_id`);
+    const o = rows?.[0];
+    if (!o) return res.status(404).json({ error: 'nao encontrado' });
+    const paid = o.status === 'paid' || o.status === 'delivered' || o.abacate_status === 'PAID';
+    res.json({ ok: true, paid, status: o.status, abacate_status: o.abacate_status });
+  } catch (e) {
+    res.status(500).json({ error: 'erro interno' });
+  }
+});
+
+// Webhook da AbacatePay — confirmação automática quando cliente paga
+app.post('/api/webhooks/abacatepay', async (req, res) => {
+  try {
+    const expected = process.env.ABACATEPAY_WEBHOOK_SECRET;
+    if (!expected) return res.status(500).json({ error: 'webhook nao configurado' });
+    const recv = req.headers['x-abacatepay-secret'] || req.headers['abacatepay-secret'] || req.query.webhookSecret;
+    if (recv !== expected) return res.status(401).json({ error: 'unauthorized' });
+
+    const event = req.body?.event;
+    const data = req.body?.data;
+    console.log('[webhook abacatepay] event:', event, 'id:', data?.id, 'ext:', data?.externalId);
+
+    if (event === 'transparent.completed' || event === 'checkout.completed') {
+      const externalId = data?.externalId;
+      const filter = _isUuid(externalId) ? `id=eq.${externalId}` : `abacate_charge_id=eq.${data?.id}`;
+      const rows = await supaFetch('GET', `orders?${filter}&select=id,status`);
+      const o = rows?.[0];
+      if (!o) return res.json({ ok: true, found: false });
+      if (o.status === 'paid' || o.status === 'delivered') return res.json({ ok: true, already: true });
+      await supaFetch('PATCH', `orders?id=eq.${o.id}`, {
+        status: 'paid',
+        abacate_status: 'PAID',
+        paid_at: new Date().toISOString(),
+      });
+      console.log('[webhook abacatepay] order', o.id, 'PAID');
+      // dispara entrega via brindeVideo cron quando necessário
+      try { require('./lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[webhook abacatepay] erro:', e.message);
     res.status(500).json({ error: 'erro interno' });
   }
 });
