@@ -1425,11 +1425,18 @@ app.post('/api/webhooks/abacatepay', async (req, res) => {
 
     const event = req.body?.event;
     const data = req.body?.data;
-    console.log('[webhook abacatepay] event:', event, 'id:', data?.id, 'ext:', data?.externalId);
+    console.log('[webhook abacatepay] RAW:', JSON.stringify(req.body));
 
-    if (event === 'transparent.completed' || event === 'checkout.completed') {
-      const externalId = data?.externalId;
-      const filter = _isUuid(externalId) ? `id=eq.${externalId}` : `abacate_charge_id=eq.${data?.id}`;
+    if (event === 'transparent.completed' || event === 'checkout.completed' || event === 'billing.paid' || event === 'paid') {
+      // AbacatePay manda estrutura variável — tentamos várias chaves
+      const transparent = data?.transparent || data?.checkout || data?.charge || data?.pixQrCode || data;
+      const externalId = transparent?.externalId || data?.externalId;
+      const paymentId = transparent?.id || data?.id;
+      // tira sufixo "-plan-timestamp" do externalId pra recuperar o orderId
+      const m = externalId && /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(externalId);
+      const orderId = m?.[1];
+      console.log('[webhook abacatepay] parsed orderId:', orderId, 'paymentId:', paymentId);
+      const filter = orderId ? `id=eq.${orderId}` : `abacate_charge_id=eq.${paymentId}`;
       const rows = await supaFetch('GET', `orders?${filter}&select=id,status`);
       const o = rows?.[0];
       if (!o) return res.json({ ok: true, found: false });
