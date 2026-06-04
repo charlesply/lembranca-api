@@ -1345,6 +1345,21 @@ app.post('/api/pay/create', async (req, res) => {
     if (!p) return res.status(400).json({ error: 'plano invalido' });
     const cents = p.cents;
 
+    // Idempotência inteligente: se já tem PIX ATIVO com MESMO plano e MESMO valor,
+    // reutiliza (não chama AbacatePay de novo). Se mudou plano → cria novo.
+    try {
+      const existing = await supaFetch('GET', `orders?id=eq.${orderId}&select=plan,abacate_charge_id,abacate_brcode,abacate_qrcode,abacate_status,payment_amount`);
+      const e = existing?.[0];
+      if (e && e.plan === plan && e.abacate_brcode && e.abacate_status === 'PENDING' && Number(e.payment_amount) === cents / 100) {
+        console.log('[/api/pay/create] reutilizando PIX existente', e.abacate_charge_id, 'p/', orderId);
+        return res.json({ ok: true, paymentId: e.abacate_charge_id, brCode: e.abacate_brcode, brCodeBase64: e.abacate_qrcode, amount: cents });
+      }
+    } catch (_) {}
+
+    // externalId UNICO por (orderId + plan + timestamp). Sem isso o AbacatePay
+    // deduplica pelo externalId e retorna a cobrança ANTIGA com plano errado.
+    const extId = `${orderId}-${plan}-${Math.floor(Date.now() / 1000)}`;
+
     // Cria cobrança PIX na AbacatePay
     const ar = await axios.post(`${ABACATEPAY_API}/transparents/create`, {
       method: 'PIX',
@@ -1352,7 +1367,7 @@ app.post('/api/pay/create', async (req, res) => {
         amount: cents,
         expiresIn: 60 * 60, // 1h
         description: p.name,
-        externalId: orderId,
+        externalId: extId,
         metadata: { order_id: orderId, plan },
       },
     }, {
