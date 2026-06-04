@@ -290,7 +290,7 @@ const generateSong = inngest.createFunction(
         // ALERTA ADMIN IMEDIATO via WhatsApp — dedup 20min (5 pedidos falhando = 1 alerta só)
         await step.run('alert-admin-cookie-stop', async () => {
           try {
-            const ADMIN_PHONE = process.env.ADMIN_PHONE || '351912589669';
+            const ADMIN_PHONE = process.env.ADMIN_PHONE || '5511920188319';
             const EVO_URL = process.env.EVO_URL || 'https://evolutiontechv2.linkarbox.app';
             const EVO_KEY = process.env.EVO_KEY || 'klRvAffSJYcPDPYCFIMQXRrcBqNztk';
             const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno_teste';
@@ -429,7 +429,7 @@ const generateSong = inngest.createFunction(
             const lastMs = (Array.isArray(prev) && prev[0] && prev[0].value) ? parseInt(prev[0].value, 10) : 0;
             const nowMs = Date.now();
             if (nowMs - lastMs < 20 * 60 * 1000) { console.log('[Inngest] alerta outage já enviado <20min — dedup'); return; }
-            const ADMIN_PHONE = process.env.ADMIN_PHONE || '351912589669';
+            const ADMIN_PHONE = process.env.ADMIN_PHONE || '5511920188319';
             const EVO_URL = process.env.EVO_URL || 'https://evolutiontechv2.linkarbox.app';
             const EVO_KEY = process.env.EVO_KEY || 'klRvAffSJYcPDPYCFIMQXRrcBqNztk';
             const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno_teste';

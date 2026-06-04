@@ -597,7 +597,7 @@ app.post('/api/chat/ack', async (req, res) => {
     const st = String(b.story || '').slice(0, 2000).trim();
     const words = st ? st.split(/\s+/).length : 0;
     const tooShort = words < 8;
-    const sys = 'Voce e a Bia, atendente humana e calorosa da Historias Cantadas (musicas personalizadas feitas sob medida). '
+    const sys = 'Voce e a Bia, atendente humana e calorosa da Lembranca Cantada (musicas personalizadas feitas sob medida). '
       + 'Responda em portugues do Brasil, no maximo 2 frases curtas, tom acolhedor, natural e especifico. No maximo 1 emoji. '
       + 'Nunca invente fatos que a pessoa nao contou. Nao use cliches de marketing. '
       + (tooShort
@@ -1139,7 +1139,7 @@ app.post('/api/order/:id/proof', upload.single('proof'), async (req, res) => {
         const EVO_URL = process.env.EVO_URL || 'https://evolutiontechv2.linkarbox.app';
         const EVO_KEY = process.env.EVO_KEY || '';
         const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno_teste';
-        const ADMIN_PHONE = process.env.ADMIN_PHONE || '5511920103442';
+        const ADMIN_PHONE = process.env.ADMIN_PHONE || '5511920188319';
         const id8 = id.slice(0, 8);
         const msg = [
           '🔔 *Comprovante pra revisar*',
@@ -1221,7 +1221,7 @@ app.post('/api/order/:id/help_request', async (req, res) => {
       const EVO_URL = process.env.EVO_URL || 'https://evolutiontechv2.linkarbox.app';
       const EVO_KEY = process.env.EVO_KEY || '';
       const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno_teste';
-      const ADMIN_PHONE = process.env.ADMIN_PHONE || '5511920103442';
+      const ADMIN_PHONE = process.env.ADMIN_PHONE || '5511920188319';
       if (EVO_KEY) {
         const id8 = id.slice(0, 8);
         const ai = o.proof_ai_data?.ai || {};
@@ -1323,10 +1323,10 @@ const N8N_PAY_WEBHOOK_URL = process.env.N8N_PAY_WEBHOOK_URL || ''; // opcional: 
 // PLANOS com PREÇO FIXO NO SERVIDOR (cliente NAO consegue alterar o valor —
 // o front só manda o identificador do plano, quem decide o preço é o backend).
 const PAY_PLANS = {
-  musica:      { cents: 1990, name: 'Musica personalizada - Historias Cantadas' },
-  completa:    { cents: 2990, name: 'Musica + Video personalizado com foto - Historias Cantadas' },
+  musica:      { cents: 1990, name: 'Musica personalizada - Lembranca Cantada' },
+  completa:    { cents: 2990, name: 'Musica + Video personalizado com foto - Lembranca Cantada' },
   // legado (nao ofertado no site novo, mantido por compatibilidade de links antigos)
-  video_letra: { cents: 2990, name: 'Musica + Video personalizado com foto - Historias Cantadas' },
+  video_letra: { cents: 2990, name: 'Musica + Video personalizado com foto - Lembranca Cantada' },
 };
 
 // ═══════════════════════════════════════════════════════════════
