@@ -16,6 +16,7 @@ const { generateSong } = require('./inngest/functions/generateSong');
 const { supaFetch } = require('./lib/supabase');
 const { generateLyricsWithGPT } = require('./lib/openai');
 const { createPreviewFromUrl, PREVIEW_DIR, ORIGINALS_DIR, AUDIO_EDIT_URL, SELF_URL: SELF_URL_LIB } = require('./lib/audio');
+const { sendPurchaseToMeta } = require('./lib/metaCapi');
 const { getClient, resetClient, isAuthError } = require('./lib/suno');
 
 // Multer config: aceita audio ate 25MB (limite do Whisper)
@@ -671,6 +672,12 @@ app.post('/api/order', async (req, res) => {
     const honoree = (b.honoree_name || b.honoreeName || '').toString().trim();
     if (!honoree) return res.status(400).json({ error: 'honoree_name obrigatorio' });
     const phone = (b.phone || '').toString().replace(/\D/g, '').slice(0, 15) || null;
+
+    // Captura IP + User-Agent do request — usados pelo Meta CAPI pra match quality.
+    const ipRaw = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '';
+    const clientIp = String(ipRaw).split(',')[0].trim() || null;
+    const clientUA = (req.headers['user-agent'] || '').toString().slice(0, 500) || null;
+
     const order = {
       phone,
       honoree_name: _clip(honoree, 120),
@@ -682,11 +689,12 @@ app.post('/api/order', async (req, res) => {
       mood: _clip(b.mood, 80),
       voice_preference: _clip(b.voice_preference || b.voice, 80),
       relationship: _clip(b.relationship, 80),
-      // ATENÇÃO: last_screen e events_log foram REMOVIDOS porque as colunas
-      // não existem na tabela orders. O Supabase rejeitava o INSERT inteiro
-      // (PGRST204) e o endpoint retornava 500, derrubando TODA criação de
-      // pedido. Pra reabilitar tracking de quiz, primeiro ALTER TABLE
-      // adicionando as colunas, depois reintroduz aqui.
+      // Meta Pixel tracking (pra CAPI server-side disparar pro pixel certo)
+      fbp_pixel_id: _clip(b.fbp_pixel_id, 30),
+      fbp: _clip(b.fbp, 200),
+      fbc: _clip(b.fbc, 200),
+      client_ip: clientIp,
+      client_user_agent: clientUA,
       status: 'generating', // SEMPRE server-side; cliente nao escolhe
     };
     const rows = await supaFetch('POST', 'orders', order);
@@ -1449,6 +1457,19 @@ app.post('/api/webhooks/abacatepay', async (req, res) => {
       console.log('[webhook abacatepay] order', o.id, 'PAID');
       // dispara entrega via brindeVideo cron quando necessário
       try { require('./lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
+      // Meta Conversions API (CAPI) — envio server-side garantido, dedup com client-side via event_id
+      try {
+        const fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent`);
+        const fullOrder = fullRows?.[0];
+        if (fullOrder && !fullOrder.meta_capi_sent) {
+          const result = await sendPurchaseToMeta(fullOrder);
+          if (result?.ok) {
+            await supaFetch('PATCH', `orders?id=eq.${o.id}`, { meta_capi_sent: true });
+          }
+        }
+      } catch (e) {
+        console.error('[webhook abacatepay] CAPI falhou (ignorado):', e.message);
+      }
     }
     res.json({ ok: true });
   } catch (e) {
