@@ -1620,6 +1620,20 @@ app.post('/api/regenerate', async (req, res) => {
   });
 });
 
+// ═══ Trigger manual do CAPI monitor — útil pra debug e dashboard admin ═══
+// GET /api/admin/capi_monitor_run?secret=XXX → executa a varredura agora
+app.get('/api/admin/capi_monitor_run', async (req, res) => {
+  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
+  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const { runOnce } = require('./lib/capiMonitor');
+    const r = await runOnce();
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ═══ Inngest handler — recebe webhooks do Inngest Cloud ═══
 app.use('/api/inngest', serve({
   client: inngest,
@@ -1675,6 +1689,13 @@ app.listen(PORT, '0.0.0.0', () => {
     const { startBrindeGenCron } = require('./lib/brindeVideo');
     startBrindeGenCron();
   } catch (err) { console.error('[BrindeVideo] falha ao iniciar cron (ignorado):', err.message); }
+  // Cron CAPI Monitor — rede de segurança pra Meta CAPI. Varre orders pagas das últimas 24h
+  // sem meta_capi_sent e reenvia o Purchase. Cobre falhas do webhook AbacatePay, restart no
+  // exato momento do pagamento, token vazio, etc. Default ON em prod.
+  try {
+    const { startCron: startCapiMonitorCron } = require('./lib/capiMonitor');
+    startCapiMonitorCron();
+  } catch (err) { console.error('[capiMonitor] falha ao iniciar cron (ignorado):', err.message); }
   // Funil de Recuperação — gated por RECOVERY_ENABLED=true (default OFF). Recupera leads quentes
   // (prévia enviada, não pago) com mensagens escalonadas. Respeita teste/dry-run/pause/opt-out.
   try {
