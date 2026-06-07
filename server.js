@@ -1519,6 +1519,20 @@ app.post('/api/webhooks/abacatepay', async (req, res) => {
       console.log('[webhook abacatepay] order', o.id, 'PAID');
       // dispara entrega via brindeVideo cron quando necessário
       try { require('./lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
+      // Email transacional de entrega — fire-and-forget. Se falhar aqui, o cron
+      // emailDeliveryMonitor pega no próximo tick (a cada 10 min).
+      // Carrega dados completos pra o template + lib.
+      try {
+        const emailRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,honoree_name,customer_name,customer_email,plan,original_audio_url,full_audio_urls,video_brinde_url,email_delivery_sent`);
+        const emailOrder = emailRows?.[0];
+        if (emailOrder && emailOrder.customer_email && !emailOrder.email_delivery_sent) {
+          require('./lib/emailDelivery').sendDeliveryEmail(emailOrder).catch(e => {
+            console.error('[webhook abacatepay] email delivery falhou (ignorado, cron tenta de novo):', e.message);
+          });
+        }
+      } catch (e) {
+        console.error('[webhook abacatepay] erro ao buscar pra email (ignorado):', e.message);
+      }
       // Meta Conversions API (CAPI) — envio server-side garantido, dedup com client-side via event_id
       try {
         let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent`);
@@ -1725,6 +1739,62 @@ app.get('/api/admin/capi_monitor_run', async (req, res) => {
   }
 });
 
+// ═══ Trigger manual do Email Delivery monitor ═══
+app.get('/api/admin/email_delivery_run', async (req, res) => {
+  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
+  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const { runOnce } = require('./lib/emailDeliveryMonitor');
+    const r = await runOnce();
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══ Envia email de teste pra validar template + DNS (não toca no DB) ═══
+// GET /api/admin/email_test?secret=XXX&to=alguem@email.com&orderId=optional
+app.get('/api/admin/email_test', async (req, res) => {
+  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
+  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const to = String(req.query.to || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return res.status(400).json({ error: 'param to= obrigatório (email válido)' });
+    // Dataset fake só pra renderizar — não persiste no DB
+    const fakeOrder = {
+      id: req.query.orderId || '00000000-0000-0000-0000-000000000000',
+      honoree_name: 'Maria',
+      customer_name: 'Cliente Teste',
+      customer_email: to,
+      plan: req.query.plan || 'completa',
+      original_audio_url: 'https://tempfile.aiquickdraw.com/r/teste.mp3', // só pra passar no check de hasMedia
+      email_delivery_sent: false,
+    };
+    const { renderHtml } = require('./lib/emailDelivery');
+    // Envio direto via Resend pra não marcar a flag de orders
+    if (!process.env.RESEND_API_KEY) return res.status(503).json({ error: 'RESEND_API_KEY não configurada' });
+    const r = await require('axios').post('https://api.resend.com/emails', {
+      from: `${process.env.EMAIL_FROM_NAME || 'Bia da Lembrança Cantada'} <${process.env.EMAIL_FROM || 'bia@lembrancacantada.com'}>`,
+      to: [to],
+      reply_to: process.env.EMAIL_REPLY_TO || process.env.EMAIL_FROM || 'bia@lembrancacantada.com',
+      subject: '🎵 [TESTE] Sua música para Maria está pronta!',
+      html: renderHtml({
+        honoree: fakeOrder.honoree_name,
+        customerName: fakeOrder.customer_name,
+        plan: fakeOrder.plan,
+        deliveryUrl: `${process.env.APP_URL || 'https://app.lembrancacantada.com'}/p/${fakeOrder.id}`,
+      }),
+      tags: [{ name: 'kind', value: 'test' }],
+    }, {
+      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      timeout: 15000,
+    });
+    res.json({ ok: true, id: r.data?.id });
+  } catch (e) {
+    res.status(500).json({ error: e.response?.data || e.message });
+  }
+});
+
 // ═══ Inngest handler — recebe webhooks do Inngest Cloud ═══
 app.use('/api/inngest', serve({
   client: inngest,
@@ -1795,6 +1865,13 @@ app.listen(PORT, '0.0.0.0', () => {
     const { startCron: startSunoMonitorCron } = require('./lib/sunoMonitor');
     startSunoMonitorCron();
   } catch (err) { console.error('[sunoMonitor] falha ao iniciar cron (ignorado):', err.message); }
+  // Cron Email Delivery Monitor — rede de segurança pra email transacional. Varre orders
+  // pagas com email + áudio pronto sem email_delivery_sent. Reenvia em até 10 min.
+  // Gated por RESEND_API_KEY existir (senão nem inicia).
+  try {
+    const { startCron: startEmailDeliveryCron } = require('./lib/emailDeliveryMonitor');
+    startEmailDeliveryCron();
+  } catch (err) { console.error('[emailDeliveryMonitor] falha ao iniciar cron (ignorado):', err.message); }
   // Funil de Recuperação — gated por RECOVERY_ENABLED=true (default OFF). Recupera leads quentes
   // (prévia enviada, não pago) com mensagens escalonadas. Respeita teste/dry-run/pause/opt-out.
   try {
