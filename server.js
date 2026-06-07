@@ -1291,10 +1291,33 @@ app.post('/api/webhooks/sunoapi', express.json({ limit: '2mb' }), async (req, re
       return;
     }
 
-    // Apenas observabilidade: salva snapshot do callback no error_message
-    // (campo livre que já usamos pra rastros). Não altera status — Inngest manda.
+    // Snapshot de observabilidade no error_message (campo livre pra rastro)
     const snapshot = `[sunoapi/${callbackType}] code=${code} tracks=${tracks.length} t=${new Date().toISOString().slice(0,19)}`;
-    await supaFetch('PATCH', `orders?id=eq.${o.id}`, { error_message: snapshot.slice(0, 500) });
+    const patch = { error_message: snapshot.slice(0, 500) };
+
+    // À PROVA DE FALHAS: se este callback tem tracks com audioUrl OU clip ID,
+    // já salva no DB AGORA. Antes esse handler só fazia observabilidade e
+    // dependia do Inngest pra preencher — quando o Inngest falhava em ler o
+    // status (Suno API mente FAILED), a order ficava sem URL eternamente.
+    //
+    // Construir cdn1.suno.ai/{id}.mp3 a partir do clip ID é DETERMINÍSTICO:
+    // sempre funciona se a música foi de fato gerada (testado historicamente).
+    if (tracks.length && (callbackType === 'complete' || callbackType === 'first')) {
+      try {
+        const { tracksToUrls } = require('./lib/sunoFallback');
+        const { urls, ids } = tracksToUrls(tracks);
+        if (urls.length) {
+          patch.full_audio_urls = urls;
+          patch.original_audio_url = urls[0];
+        }
+        if (ids.length) patch.suno_clip_ids = ids;
+        console.log(`[sunoapi/webhook] 💾 ${o.id.slice(0,8)} salvando ${urls.length} URL(s) + ${ids.length} clipId(s)`);
+      } catch (e) {
+        console.error('[sunoapi/webhook] falha em extrair URLs:', e.message);
+      }
+    }
+
+    await supaFetch('PATCH', `orders?id=eq.${o.id}`, patch);
   } catch (e) {
     console.error('[sunoapi/webhook] erro (não-fatal):', e.message);
   }
@@ -1620,6 +1643,31 @@ app.post('/api/regenerate', async (req, res) => {
   });
 });
 
+// ═══ Trigger manual do Suno monitor — varre orders sem URL de áudio ═══
+// GET /api/admin/suno_monitor_run?secret=XXX → executa varredura agora
+app.get('/api/admin/suno_monitor_run', async (req, res) => {
+  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
+  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const { runOnce } = require('./lib/sunoMonitor');
+    const r = await runOnce();
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══ Trigger manual do fallback pra UMA order específica ═══
+// GET /api/admin/suno_rescue?id=ORDER_ID&secret=XXX
+app.get('/api/admin/suno_rescue', async (req, res) => {
+  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
+  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
+  if (!_isUuid(req.query.id)) return res.status(400).json({ error: 'id inválido' });
+  try {
+    const { ensureAudioUrls } = require('./lib/sunoFallback');
+    const r = await ensureAudioUrls(req.query.id, { maxRetries: 5 });
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══ Trigger manual do CAPI monitor — útil pra debug e dashboard admin ═══
 // GET /api/admin/capi_monitor_run?secret=XXX → executa a varredura agora
 app.get('/api/admin/capi_monitor_run', async (req, res) => {
@@ -1696,6 +1744,14 @@ app.listen(PORT, '0.0.0.0', () => {
     const { startCron: startCapiMonitorCron } = require('./lib/capiMonitor');
     startCapiMonitorCron();
   } catch (err) { console.error('[capiMonitor] falha ao iniciar cron (ignorado):', err.message); }
+  // Cron Suno Monitor — rede de segurança pra garantir URL de áudio. Varre orders com
+  // suno_task_id mas sem original_audio_url (lookback 48h) e resgata via Suno API +
+  // cdn1.suno.ai/{clipId}.mp3 com retry 5x. Cobre webhook complete que não salvou URL,
+  // Inngest que viu FAILED em record-info stale, etc. Default ON.
+  try {
+    const { startCron: startSunoMonitorCron } = require('./lib/sunoMonitor');
+    startSunoMonitorCron();
+  } catch (err) { console.error('[sunoMonitor] falha ao iniciar cron (ignorado):', err.message); }
   // Funil de Recuperação — gated por RECOVERY_ENABLED=true (default OFF). Recupera leads quentes
   // (prévia enviada, não pago) com mensagens escalonadas. Respeita teste/dry-run/pause/opt-out.
   try {
