@@ -1463,10 +1463,20 @@ app.post('/api/webhooks/abacatepay', async (req, res) => {
       const transparent = data?.transparent || data?.checkout || data?.charge || data?.pixQrCode || data;
       const externalId = transparent?.externalId || data?.externalId;
       const paymentId = transparent?.id || data?.id;
-      // tira sufixo "-plan-timestamp" do externalId pra recuperar o orderId
+      // Resolução do orderId — ordem de prioridade:
+      //   1) metadata.order_id (V2 — mais confiável; SEMPRE vem quando criamos via
+      //      /api/pay/create porque passamos metadata={order_id, plan})
+      //   2) externalId no formato "{uuid}-{plan}-{ts}" (legado)
+      //   3) abacate_charge_id no DB (último recurso — pode falhar se PIX foi
+      //      renovado e a charge atual difere da salva)
+      // BUG corrigido: antes só olhávamos externalId. Quando AbacatePay V2 manda
+      // externalId=null (caso da Maria luana 07/06 — order 7756cae8), o parse
+      // falhava silenciosamente e a order ficava preview_sent pra sempre, mesmo
+      // com pagamento confirmado no AbacatePay.
+      const metadataOrderId = transparent?.metadata?.order_id || data?.metadata?.order_id;
       const m = externalId && /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(externalId);
-      const orderId = m?.[1];
-      console.log('[webhook abacatepay] parsed orderId:', orderId, 'paymentId:', paymentId);
+      const orderId = metadataOrderId || m?.[1];
+      console.log('[webhook abacatepay] parsed orderId:', orderId, '(src:', metadataOrderId ? 'metadata' : (m ? 'externalId' : 'fallback-paymentId'), ') paymentId:', paymentId);
       const filter = orderId ? `id=eq.${orderId}` : `abacate_charge_id=eq.${paymentId}`;
       const rows = await supaFetch('GET', `orders?${filter}&select=id,status`);
       const o = rows?.[0];
