@@ -678,8 +678,15 @@ app.post('/api/order', async (req, res) => {
     const clientIp = String(ipRaw).split(',')[0].trim() || null;
     const clientUA = (req.headers['user-agent'] || '').toString().slice(0, 500) || null;
 
+    // Email — normalizado (lowercase + trim). Vai pro CAPI hashed (user_data.em)
+    // pra melhorar Match Quality do Meta Ads. Coluna customer_email VARCHAR(120).
+    const emailRaw = String(b.customer_email || b.email || '').trim().toLowerCase().slice(0, 120);
+    const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw);
+    const customer_email = emailValid ? emailRaw : null;
+
     const order = {
       phone,
+      ...(customer_email ? { customer_email } : {}),
       honoree_name: _clip(honoree, 120),
       customer_name: _clip(b.customer_name || b.clientName, 120),
       occasion: _clip(b.occasion, 200),
@@ -697,10 +704,19 @@ app.post('/api/order', async (req, res) => {
       client_user_agent: clientUA,
       status: 'generating', // SEMPRE server-side; cliente nao escolhe
     };
-    const rows = await supaFetch('POST', 'orders', order);
+    // Inserção defensiva: se a coluna `customer_email` ainda não existir no DB
+    // (transição de schema), Supabase retorna null. Detectamos e re-tentamos
+    // sem ela pra venda NUNCA parar por bug de migração. CAPI fallback usa
+    // só o que tiver disponível.
+    let rows = await supaFetch('POST', 'orders', order);
+    if ((!Array.isArray(rows) || !rows[0]) && order.customer_email !== undefined) {
+      console.warn('[/api/order] retry sem customer_email (coluna pode não existir no DB ainda)');
+      const { customer_email: _ignored, ...orderWithoutEmail } = order;
+      rows = await supaFetch('POST', 'orders', orderWithoutEmail);
+    }
     const id = Array.isArray(rows) && rows[0] ? rows[0].id : null;
     if (!id) return res.status(500).json({ error: 'falha ao criar pedido' });
-    console.log('[/api/order] criado:', id, '|', honoree);
+    console.log('[/api/order] criado:', id, '|', honoree, customer_email ? '| email ok' : '');
     res.json({ ok: true, orderId: id });
   } catch (e) {
     console.error('[/api/order] erro:', e.message);
@@ -802,8 +818,21 @@ app.post('/api/order/:id/update', async (req, res) => {
     const patch = {};
     for (const k in TEXT) if (b[k] !== undefined && b[k] !== null) patch[k] = _clip(String(b[k]), TEXT[k]);
     if (b.phone !== undefined) { const p = String(b.phone || '').replace(/\D/g, '').slice(0, 15); patch.phone = p || null; }
+    // Email — atualiza só se válido. Normaliza lowercase + trim.
+    if (b.customer_email !== undefined || b.email !== undefined) {
+      const e = String(b.customer_email || b.email || '').trim().toLowerCase().slice(0, 120);
+      if (!e) patch.customer_email = null;
+      else if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) patch.customer_email = e;
+      // email inválido — silenciosamente ignora, não bloqueia o resto do patch
+    }
     if (!Object.keys(patch).length) return res.json({ ok: true, updated: 0 });
-    await supaFetch('PATCH', `orders?id=eq.${id}`, patch);
+    // PATCH defensive: se customer_email falhar (coluna ausente), retry sem ele.
+    let upd = await supaFetch('PATCH', `orders?id=eq.${id}`, patch);
+    if (upd === null && patch.customer_email !== undefined) {
+      console.warn('[/api/order/:id/update] retry sem customer_email');
+      const { customer_email: _ignored, ...rest } = patch;
+      if (Object.keys(rest).length) upd = await supaFetch('PATCH', `orders?id=eq.${id}`, rest);
+    }
     res.json({ ok: true, updated: Object.keys(patch).length });
   } catch (e) {
     console.error('[/api/order update] erro:', e.message);
@@ -1492,7 +1521,11 @@ app.post('/api/webhooks/abacatepay', async (req, res) => {
       try { require('./lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
       // Meta Conversions API (CAPI) — envio server-side garantido, dedup com client-side via event_id
       try {
-        const fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent`);
+        let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent`);
+        // Fallback: se a coluna customer_email ainda não existir, refaz sem ela
+        if (!Array.isArray(fullRows) || !fullRows[0]) {
+          fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent`);
+        }
         const fullOrder = fullRows?.[0];
         if (fullOrder && !fullOrder.meta_capi_sent) {
           const result = await sendPurchaseToMeta(fullOrder);
