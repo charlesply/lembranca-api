@@ -29,6 +29,7 @@ const miscRoutes = require('./routes/miscRoutes');
 const sunoRoutes = require('./routes/sunoRoutes');
 const webhookRoutes = require('./routes/webhookRoutes');
 const payRoutes = require('./routes/payRoutes');
+const orderReadRoutes = require('./routes/orderReadRoutes');
 
 // Multer config: aceita audio ate 25MB (limite do Whisper)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -51,6 +52,7 @@ app.use(miscRoutes);
 app.use(sunoRoutes);
 app.use(webhookRoutes);
 app.use(payRoutes);
+app.use(orderReadRoutes);
 
 const PORT = process.env.PORT || 3000;
 const SUNO_COOKIE = process.env.SUNO_COOKIE || '';
@@ -179,77 +181,9 @@ app.post('/api/order', async (req, res) => {
 
 // Consulta pedidos por TELEFONE (cliente que voltou). Retorna os mais recentes,
 // apenas colunas seguras. Tenta variantes comuns do numero (com/sem 55, com/sem 9).
-app.get('/api/order/lookup', async (req, res) => {
-  try {
-    const raw = (req.query.phone || '').toString().replace(/\D/g, '').slice(0, 15);
-    if (raw.length < 10) return res.status(400).json({ error: 'phone invalido' });
-    const variants = new Set([raw]);
-    if (raw.startsWith('55')) variants.add(raw.slice(2)); else variants.add('55' + raw);
-    // variante sem o 9 do celular (DDD + 9 + 8 digitos) e com o 9
-    const m = raw.replace(/^55/, '');
-    if (m.length === 11 && m[2] === '9') variants.add((raw.startsWith('55') ? '55' : '') + m.slice(0, 2) + m.slice(3));
-    if (m.length === 10) variants.add((raw.startsWith('55') ? '55' : '') + m.slice(0, 2) + '9' + m.slice(2));
-    const cols = 'id,status,honoree_name,customer_name,preview_audio_url,original_audio_url,video_brinde_url,paid_at,created_at';
-    // usa eq. em loop (axios encoda mal o in.()) — junta e deduplica
-    const byId = {};
-    for (const v of variants) {
-      const rows = await supaFetch('GET', `orders?phone=eq.${v}&select=${cols}&order=created_at.desc&limit=5`);
-      if (Array.isArray(rows)) for (const r of rows) byId[r.id] = r;
-    }
-    const orders = Object.values(byId)
-      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
-      .slice(0, 5);
-    res.json({ ok: true, orders });
-  } catch (e) {
-    console.error('[/api/order/lookup] erro:', e.message);
-    res.status(500).json({ error: 'erro interno' });
-  }
-});
+// /api/order/lookup, /can_preview, /:id/status, /:id/error extraidos pra routes/orderReadRoutes.js na Fase F.8.a
 
-// RATE LIMIT: cada número pode ter só 1 prévia NÃO-paga por 24h.
-// Pra pedir outra música, precisa pagar a prévia pendente. Retorna o pedido que está bloqueando.
-app.get('/api/order/can_preview', async (req, res) => {
-  try {
-    const phone = (req.query.phone || '').toString().replace(/\D/g, '').slice(0, 15);
-    const exclude = (req.query.exclude || '').toString();
-    if (phone.length < 10) return res.json({ blocked: false });
-    const variants = new Set([phone]);
-    if (phone.startsWith('55')) variants.add(phone.slice(2)); else variants.add('55' + phone);
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    const cols = 'id,honoree_name,preview_audio_url,status,created_at,paid_at';
-    let pend = null;
-    for (const v of variants) {
-      const rows = await supaFetch('GET', `orders?phone=eq.${v}&paid_at=is.null&select=${cols}&order=created_at.desc&limit=10`);
-      for (const o of (Array.isArray(rows) ? rows : [])) {
-        if (o.id === exclude) continue;
-        if (!['preview_sent', 'generating'].includes(o.status)) continue;
-        if (new Date(o.created_at).getTime() < cutoff) continue;
-        // prefere um com prévia pronta
-        if (!pend || (o.status === 'preview_sent' && o.preview_audio_url)) pend = o;
-      }
-    }
-    if (pend) return res.json({ blocked: true, order: pend });
-    res.json({ blocked: false });
-  } catch (e) {
-    console.error('[/api/order/can_preview] erro:', e.message);
-    res.json({ blocked: false }); // em erro, não bloqueia (fail-open)
-  }
-});
 
-// Consulta status do pedido (apenas colunas seguras; exige o UUID exato)
-app.get('/api/order/:id/status', async (req, res) => {
-  try {
-    const id = req.params.id;
-    if (!_isUuid(id)) return res.status(400).json({ error: 'id invalido' });
-    const cols = 'status,preview_audio_url,original_audio_url,full_audio_urls,client_contacted_at,error_message,final_lyrics,video_brinde_url,video_upsell_status,honoree_name,customer_name,phone,paid_at';
-    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=${cols}`);
-    if (!Array.isArray(rows) || !rows[0]) return res.status(404).json({ error: 'nao encontrado' });
-    res.json(rows[0]);
-  } catch (e) {
-    console.error('[/api/order status] erro:', e.message);
-    res.status(500).json({ error: 'erro interno' });
-  }
-});
 
 // Atualiza campos do pedido conforme a conversa anda (persistencia incremental, igual n8n).
 // Whitelist de campos seguros — status, preco, midia e flags ficam SEMPRE server-side.
@@ -293,19 +227,6 @@ app.post('/api/order/:id/update', async (req, res) => {
   }
 });
 
-// Marca pedido como erro (front chama no catch). PATCH so server-side.
-app.post('/api/order/:id/error', async (req, res) => {
-  try {
-    const id = req.params.id;
-    if (!_isUuid(id)) return res.status(400).json({ error: 'id invalido' });
-    const msg = _clip((req.body && req.body.error_message) || 'erro no front', 500);
-    await supaFetch('PATCH', `orders?id=eq.${id}`, { status: 'error', error_message: msg });
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('[/api/order error] erro:', e.message);
-    res.status(500).json({ error: 'erro interno' });
-  }
-});
 
 // Upload da FOTO do cliente (plano premium) — só pra pedido PAGO. Sobe no
 // Storage e marca pra geracao do video personalizado (cron upsellVideo).
@@ -682,64 +603,7 @@ app.post('/api/order/:id/proof', upload.single('proof'), async (req, res) => {
 });
 
 // PEDIDO DE AJUDA — quando o cliente clica em "Falar com a Bia no WhatsApp"
-// depois de uma rejeição. Salva timestamp no proof_ai_data pra histórico e
-// avisa o admin no WhatsApp imediatamente (pra ela já abrir o chat sabendo).
-app.post('/api/order/:id/help_request', async (req, res) => {
-  try {
-    const id = req.params.id;
-    if (!_isUuid(id)) return res.status(400).json({ ok: false, reason: 'id invalido' });
-    const reasons = Array.isArray(req.body?.reasons) ? req.body.reasons.slice(0, 8) : [];
-    const ctx = String(req.body?.context || 'rejected').slice(0, 40);
-
-    // Busca dados do pedido pra montar a notificação rica
-    const rows = await supaFetch('GET',
-      `orders?id=eq.${id}&select=id,honoree_name,customer_name,phone,proof_ai_data,proof_status,paid_at,created_at`);
-    const o = Array.isArray(rows) && rows[0] ? rows[0] : null;
-    if (!o) return res.status(404).json({ ok: false, reason: 'pedido nao encontrado' });
-
-    // Persiste o ping no proof_ai_data (pra historial). Append-only.
-    try {
-      const cur = o.proof_ai_data || {};
-      const helps = Array.isArray(cur.help_requests) ? cur.help_requests : [];
-      helps.push({ at: new Date().toISOString(), context: ctx, reasons });
-      cur.help_requests = helps.slice(-10);  // mantém só os 10 últimos
-      await supaFetch('PATCH', `orders?id=eq.${id}`, { proof_ai_data: cur });
-    } catch (e) { console.error('[/help_request] persist falhou:', e.message); }
-
-    // Avisa o admin no WhatsApp via Evolution (mesmo canal usado nos comprovantes)
-    try {
-      const EVO_URL = process.env.EVO_URL || 'https://evolutiontechv2.linkarbox.app';
-      const EVO_KEY = process.env.EVO_KEY || '';
-      const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno_teste';
-      const ADMIN_PHONE = process.env.ADMIN_PHONE || '5511920188319';
-      if (EVO_KEY) {
-        const id8 = id.slice(0, 8);
-        const ai = o.proof_ai_data?.ai || {};
-        const msg = [
-          '🆘 *Cliente pediu ajuda* (comprovante rejeitado)',
-          `Pedido: \`${id8}\``,
-          `Cliente: ${o.customer_name || '—'} · ${o.phone || '—'}`,
-          `Música pra: ${o.honoree_name || '—'}`,
-          ai.valor_reais != null ? `Valor lido: R$ ${ai.valor_reais} · esperado R$ ${o.proof_ai_data?.expected_amount ?? '?'}` : '',
-          '',
-          reasons.length ? '*Motivos da rejeição:*' : '',
-          ...reasons.map(r => `• ${r}`),
-          '',
-          `_O cliente está abrindo o WhatsApp agora — fica atenta na conversa do ${o.phone || 'cliente'}._`,
-        ].filter(Boolean).join('\n');
-        await axios.post(`${EVO_URL}/message/sendText/${EVO_INSTANCE}`,
-          { number: ADMIN_PHONE, text: msg },
-          { headers: { apikey: EVO_KEY, 'Content-Type': 'application/json' }, timeout: 10000 });
-      }
-    } catch (notifErr) { console.error('[/help_request] notif admin falhou:', notifErr.message); }
-
-    console.log('[/help_request] cliente abriu WhatsApp:', id, '·', o.phone || '?');
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('[/help_request] erro:', e.message);
-    res.status(500).json({ ok: false, reason: 'erro interno' });
-  }
-});
+// /api/order/:id/help_request extraido pra routes/orderReadRoutes.js na Fase F.8.a
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Webhook callback do sunoapi.org. É chamado em 4 momentos:
