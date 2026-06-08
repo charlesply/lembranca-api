@@ -23,6 +23,7 @@ const { getClient, resetClient, isAuthError } = require('./lib/suno');
 const adminRoutes = require('./routes/adminRoutes');
 const diagRoutes = require('./routes/diagRoutes');
 const cronRoutes = require('./routes/cronRoutes');
+const miscRoutes = require('./routes/miscRoutes');
 
 // Multer config: aceita audio ate 25MB (limite do Whisper)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -41,6 +42,7 @@ app.use(express.json());
 app.use(adminRoutes);
 app.use(diagRoutes);
 app.use(cronRoutes);
+app.use(miscRoutes);
 
 const PORT = process.env.PORT || 3000;
 const SUNO_COOKIE = process.env.SUNO_COOKIE || '';
@@ -140,13 +142,7 @@ app.get('/api/download', async (req, res) => {
 
 // POST /api/read_receipt — lê comprovante de pagamento (PDF/imagem) e extrai valor/data/método.
 // Body: {base64,mime} OU {url} OU {phone,msgId}. Resolve o cliente que manda PDF do banco.
-app.post('/api/read_receipt', async (req, res) => {
-  try {
-    const { readReceipt } = require('./lib/readReceipt');
-    res.json(await readReceipt(req.body || {}));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
+// /api/read_receipt extraido pra routes/miscRoutes.js na Fase F.4
 // /api/cookie_health extraído pra routes/diagRoutes.js na Fase F.2
 
 // GET /api/get_limit
@@ -266,74 +262,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
   }
 });
 
-// POST /api/chat/ack — a Bia "entende" a historia (texto livre) e responde calorosa.
-// Se a historia ficou curta, pede gentilmente mais 1 detalhe. GPT server-side (chave
-// nunca exposta). Se falhar/sem chave, devolve {reply:null} e o front usa o fluxo canned.
-app.post('/api/chat/ack', async (req, res) => {
-  if (!OPENAI_API_KEY) return res.json({ reply: null, needMore: false });
-  try {
-    const b = req.body || {};
-    const h = String(b.honoreeName || '').slice(0, 80);
-    const rel = String(b.relationship || '').slice(0, 40);
-    const st = String(b.story || '').slice(0, 2000).trim();
-    const words = st ? st.split(/\s+/).length : 0;
-    const tooShort = words < 8;
-    const sys = 'Voce e a Bia, atendente humana e calorosa da Lembranca Cantada (musicas personalizadas feitas sob medida). '
-      + 'Responda em portugues do Brasil, no maximo 2 frases curtas, tom acolhedor, natural e especifico. No maximo 1 emoji. '
-      + 'Nunca invente fatos que a pessoa nao contou. Nao use cliches de marketing. '
-      + (tooShort
-        ? 'A historia veio curta: agradeca de leve e peca gentilmente UM detalhe a mais (um momento marcante, uma qualidade que admira, como se conheceram). Termine com uma pergunta.'
-        : 'Agradeca citando 1 detalhe REAL que a pessoa contou e diga que vai caprichar na musica. Nao faca pergunta.');
-    const user = `Pra quem: ${h || 'essa pessoa'} (${rel || 'sem relacao informada'}).\nHistoria contada: ${st || '(vazia)'}`;
-    const r = await axios.post('https://api.openai.com/v1/chat/completions', {
-      model: 'gpt-4o-mini', temperature: 0.7, max_tokens: 130,
-      messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
-    }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, timeout: 15000 });
-    const reply = r.data?.choices?.[0]?.message?.content?.trim() || null;
-    res.json({ reply, needMore: tooShort });
-  } catch (e) {
-    console.error('[/api/chat/ack]', e.response?.data || e.message);
-    res.json({ reply: null, needMore: false });
-  }
-});
-
-// POST /api/generate_and_notify - Inngest: GPT lyrics -> Suno music -> Audio-Edit -> n8n webhook
-// Antes: 120 linhas de fire-and-forget com variáveis globais
-// Agora: inngest.send() — fila durável com retry, concorrência, e visibilidade
-app.post('/api/generate_and_notify', async (req, res) => {
-  const { prompt, story, tags, title, model, make_instrumental,
-          negative_tags, phone, vocal_gender, honoreeName,
-          relationship, occasion, genre, mood, voice, orderId } = req.body;
-
-  const hasStory = story && story.trim().length > 10;
-  if (!hasStory && !prompt && !tags) {
-    return res.status(400).json({ error: 'Informe a historia ou ao menos prompt/tags.' });
-  }
-
-  // Marcar como generating no Supabase (feedback imediato pro frontend)
-  if (orderId) {
-    await supaFetch('PATCH', `orders?id=eq.${orderId}`, { status: 'generating' });
-  }
-
-  // Enviar evento pro Inngest (FILA DURÁVEL com concurrency: 2)
-  try {
-    await inngest.send({
-      name: 'song/generate.requested',
-      data: {
-        prompt, story, tags, title, model, make_instrumental,
-        negative_tags, phone, vocal_gender, honoreeName,
-        relationship, occasion, genre, mood, voice, orderId,
-      },
-    });
-    console.log(`[Inngest] \u2705 Evento enviado: suno/generate.requested (order: ${orderId || 'sem'})`);
-  } catch (err) {
-    console.error(`[Inngest] \u274c Erro ao enviar evento:`, err.message);
-    // Fallback: ainda responde 200 mas loga o erro
-  }
-
-  // Responder IMEDIATAMENTE (igual ao comportamento anterior)
-  res.json({ success: true, orderId: orderId || null, status: 'generating' });
-});
+// /api/chat/ack e /api/generate_and_notify extraidos pra routes/miscRoutes.js na Fase F.4
 
 // ═══════════════════════════════════════════════════════════════
 // ORDERS — endpoints seguros p/ o FRONTEND (remove a service_role do site)
@@ -1293,92 +1222,7 @@ app.post('/api/pay/verify', async (req, res) => {
   }
 });
 
-// POST /api/regenerate?orderId=X — Retenta produção de uma order que falhou
-// Usa idempotency_attempt único pra Inngest aceitar (bypass do 24h dedup)
-app.post('/api/regenerate', async (req, res) => {
-  const orderId = req.query.orderId || req.body.orderId;
-  if (!orderId) {
-    return res.status(400).json({ error: 'orderId obrigatório (query string ou body)' });
-  }
-
-  // 1. Carregar dados da order do Supabase
-  const orders = await supaFetch('GET', `orders?id=eq.${orderId}&select=*`);
-  if (!orders || orders.length === 0) {
-    return res.status(404).json({ error: 'Order não encontrada' });
-  }
-  const order = orders[0];
-
-  // Não regenera se já tá entregue
-  if (['paid', 'delivered'].includes((order.status || '').toLowerCase())) {
-    return res.status(409).json({ error: `Order já está em status '${order.status}', não pode regenerar` });
-  }
-
-  // 2. Calcular próximo retryAttempt
-  const lastErr = (order.error_message || '').toLowerCase();
-  const previousAttempt = parseInt((lastErr.match(/retry attempt (\d+)/) || [])[1] || 0, 10);
-  const retryAttempt = previousAttempt + 1;
-  const MAX_RETRIES = 3;
-
-  if (retryAttempt > MAX_RETRIES) {
-    return res.status(429).json({
-      error: `Limite de ${MAX_RETRIES} retries atingido. Intervenção manual necessária.`,
-      orderId, retryAttempt,
-    });
-  }
-
-  // 3. Marcar como generating (volta pro estado em produção)
-  await supaFetch('PATCH', `orders?id=eq.${orderId}`, {
-    status: 'generating',
-    error_message: `[Regenerate retry attempt ${retryAttempt}] iniciado em ${new Date().toISOString()}`,
-    // Limpa clip IDs antigos para gerar nova música
-    suno_clip_ids: null,
-    original_audio_url: null,
-    preview_audio_url: null,
-  });
-
-  // 4. Disparar Inngest com retryAttempt no payload (bypass idempotency)
-  // Monta o estilo a partir das COLUNAS DEDICADAS (genre/mood/voice_preference/relationship),
-  // com fallback no style_raw/sanitized. Inclui mood + vocals nas tags (igual ao n8n "Gera via API"),
-  // senao o regenerate manda tags vazias e perde o mood/clima.
-  const _voice = order.voice_preference || '';
-  const _genre = order.genre || order.style_sanitized || order.style_raw || '';
-  const _mood = order.mood || '';
-  const _tagParts = [];
-  if (_genre) _tagParts.push(_genre);
-  if (_mood) _tagParts.push(_mood);
-  if (/masculin|\bmale\b|homem/i.test(_voice)) _tagParts.push('male vocals');
-  else if (/feminin|female|mulher/i.test(_voice)) _tagParts.push('female vocals');
-  const _tags = _tagParts.join(', ');
-
-  try {
-    await inngest.send({
-      name: 'song/generate.requested',
-      data: {
-        orderId,
-        retryAttempt,  // CRÍTICO: muda a idempotency key
-        story: order.story || '',
-        honoreeName: order.honoree_name,
-        relationship: order.relationship || '',
-        genre: _genre,
-        mood: _mood,
-        voice: _voice,
-        phone: order.phone,
-        tags: _tags,
-      },
-    });
-    console.log(`[Regenerate] ✅ Retry ${retryAttempt} disparado para order ${orderId}`);
-  } catch (err) {
-    console.error(`[Regenerate] ❌ Erro ao disparar:`, err.message);
-    return res.status(500).json({ error: err.message });
-  }
-
-  res.json({
-    success: true,
-    orderId,
-    retryAttempt,
-    message: `Regeneração tentativa ${retryAttempt}/${MAX_RETRIES} disparada`,
-  });
-});
+// /api/regenerate extraido pra routes/miscRoutes.js na Fase F.4
 
 // /api/admin/* extraídos pra routes/adminRoutes.js na Fase F.1
 // ═══ Inngest handler — recebe webhooks do Inngest Cloud ═══
