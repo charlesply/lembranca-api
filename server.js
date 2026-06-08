@@ -25,6 +25,7 @@ const diagRoutes = require('./routes/diagRoutes');
 const cronRoutes = require('./routes/cronRoutes');
 const miscRoutes = require('./routes/miscRoutes');
 const sunoRoutes = require('./routes/sunoRoutes');
+const webhookRoutes = require('./routes/webhookRoutes');
 
 // Multer config: aceita audio ate 25MB (limite do Whisper)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -45,6 +46,7 @@ app.use(diagRoutes);
 app.use(cronRoutes);
 app.use(miscRoutes);
 app.use(sunoRoutes);
+app.use(webhookRoutes);
 
 const PORT = process.env.PORT || 3000;
 const SUNO_COOKIE = process.env.SUNO_COOKIE || '';
@@ -742,62 +744,7 @@ app.post('/api/order/:id/help_request', async (req, res) => {
 //   • complete — todas as faixas prontas
 //   • error    — geração falhou
 //
-// IMPORTANTE: o polling do Inngest é AUTORITATIVO. Este webhook é só
-// observabilidade — loga + persiste o último estado pra debug. Não dispara
-// entrega (o pipeline durável já cuida disso). Responde 200 SEMPRE pra evitar
-// retry desnecessário do sunoapi.
-// ═══════════════════════════════════════════════════════════════════════════
-app.post('/api/webhooks/sunoapi', express.json({ limit: '2mb' }), async (req, res) => {
-  res.json({ ok: true });  // ack imediato pro sunoapi não retry
-  try {
-    const body = req.body || {};
-    const taskId = body.data?.task_id || body.data?.taskId || null;
-    const callbackType = body.data?.callbackType || 'unknown';
-    const code = body.code;
-    const tracks = Array.isArray(body.data?.data) ? body.data.data : [];
-    console.log(`[sunoapi/webhook] type=${callbackType} code=${code} task=${taskId?.slice(0,12)} tracks=${tracks.length}`);
-
-    if (!taskId) return;
-
-    // Acha o order pelo taskId
-    const rows = await supaFetch('GET', `orders?suno_task_id=eq.${taskId}&select=id,status`);
-    const o = Array.isArray(rows) && rows[0];
-    if (!o) {
-      console.warn(`[sunoapi/webhook] taskId ${taskId.slice(0,12)} sem order — ignorando`);
-      return;
-    }
-
-    // Snapshot de observabilidade no error_message (campo livre pra rastro)
-    const snapshot = `[sunoapi/${callbackType}] code=${code} tracks=${tracks.length} t=${new Date().toISOString().slice(0,19)}`;
-    const patch = { error_message: snapshot.slice(0, 500) };
-
-    // À PROVA DE FALHAS: se este callback tem tracks com audioUrl OU clip ID,
-    // já salva no DB AGORA. Antes esse handler só fazia observabilidade e
-    // dependia do Inngest pra preencher — quando o Inngest falhava em ler o
-    // status (Suno API mente FAILED), a order ficava sem URL eternamente.
-    //
-    // Construir cdn1.suno.ai/{id}.mp3 a partir do clip ID é DETERMINÍSTICO:
-    // sempre funciona se a música foi de fato gerada (testado historicamente).
-    if (tracks.length && (callbackType === 'complete' || callbackType === 'first')) {
-      try {
-        const { tracksToUrls } = require('./lib/sunoFallback');
-        const { urls, ids } = tracksToUrls(tracks);
-        if (urls.length) {
-          patch.full_audio_urls = urls;
-          patch.original_audio_url = urls[0];
-        }
-        if (ids.length) patch.suno_clip_ids = ids;
-        console.log(`[sunoapi/webhook] 💾 ${o.id.slice(0,8)} salvando ${urls.length} URL(s) + ${ids.length} clipId(s)`);
-      } catch (e) {
-        console.error('[sunoapi/webhook] falha em extrair URLs:', e.message);
-      }
-    }
-
-    await supaFetch('PATCH', `orders?id=eq.${o.id}`, patch);
-  } catch (e) {
-    console.error('[sunoapi/webhook] erro (não-fatal):', e.message);
-  }
-});
+// /api/webhooks/sunoapi extraido pra routes/webhookRoutes.js na Fase F.6
 
 // DISPARO IMEDIATO do vídeo do UPSELL (WhatsApp) — o n8n chama isto assim que a foto chega,
 // pra gerar+enviar NA HORA em vez de esperar o cron (~2min). O cron continua de backup.
@@ -922,88 +869,7 @@ app.get('/api/pay/status', async (req, res) => {
   }
 });
 
-// Webhook da AbacatePay — confirmação automática quando cliente paga
-app.post('/api/webhooks/abacatepay', async (req, res) => {
-  try {
-    const expected = process.env.ABACATEPAY_WEBHOOK_SECRET;
-    if (!expected) return res.status(500).json({ error: 'webhook nao configurado' });
-    const recv = req.headers['x-abacatepay-secret'] || req.headers['abacatepay-secret'] || req.query.webhookSecret;
-    if (recv !== expected) return res.status(401).json({ error: 'unauthorized' });
-
-    const event = req.body?.event;
-    const data = req.body?.data;
-    console.log('[webhook abacatepay] RAW:', JSON.stringify(req.body));
-
-    if (event === 'transparent.completed' || event === 'checkout.completed' || event === 'billing.paid' || event === 'paid') {
-      // AbacatePay manda estrutura variável — tentamos várias chaves
-      const transparent = data?.transparent || data?.checkout || data?.charge || data?.pixQrCode || data;
-      const externalId = transparent?.externalId || data?.externalId;
-      const paymentId = transparent?.id || data?.id;
-      // Resolução do orderId — ordem de prioridade:
-      //   1) metadata.order_id (V2 — mais confiável; SEMPRE vem quando criamos via
-      //      /api/pay/create porque passamos metadata={order_id, plan})
-      //   2) externalId no formato "{uuid}-{plan}-{ts}" (legado)
-      //   3) abacate_charge_id no DB (último recurso — pode falhar se PIX foi
-      //      renovado e a charge atual difere da salva)
-      // BUG corrigido: antes só olhávamos externalId. Quando AbacatePay V2 manda
-      // externalId=null (caso da Maria luana 07/06 — order 7756cae8), o parse
-      // falhava silenciosamente e a order ficava preview_sent pra sempre, mesmo
-      // com pagamento confirmado no AbacatePay.
-      const metadataOrderId = transparent?.metadata?.order_id || data?.metadata?.order_id;
-      const m = externalId && /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(externalId);
-      const orderId = metadataOrderId || m?.[1];
-      console.log('[webhook abacatepay] parsed orderId:', orderId, '(src:', metadataOrderId ? 'metadata' : (m ? 'externalId' : 'fallback-paymentId'), ') paymentId:', paymentId);
-      const filter = orderId ? `id=eq.${orderId}` : `abacate_charge_id=eq.${paymentId}`;
-      const rows = await supaFetch('GET', `orders?${filter}&select=id,status`);
-      const o = rows?.[0];
-      if (!o) return res.json({ ok: true, found: false });
-      if (o.status === 'paid' || o.status === 'delivered') return res.json({ ok: true, already: true });
-      await supaFetch('PATCH', `orders?id=eq.${o.id}`, {
-        status: 'paid',
-        abacate_status: 'PAID',
-        paid_at: new Date().toISOString(),
-      });
-      console.log('[webhook abacatepay] order', o.id, 'PAID');
-      // dispara entrega via brindeVideo cron quando necessário
-      try { require('./lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
-      // Email transacional de entrega — fire-and-forget. Se falhar aqui, o cron
-      // emailDeliveryMonitor pega no próximo tick (a cada 10 min).
-      // Carrega dados completos pra o template + lib.
-      try {
-        const emailRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,honoree_name,customer_name,customer_email,plan,original_audio_url,full_audio_urls,video_brinde_url,email_delivery_sent`);
-        const emailOrder = emailRows?.[0];
-        if (emailOrder && emailOrder.customer_email && !emailOrder.email_delivery_sent) {
-          require('./lib/emailDelivery').sendDeliveryEmail(emailOrder).catch(e => {
-            console.error('[webhook abacatepay] email delivery falhou (ignorado, cron tenta de novo):', e.message);
-          });
-        }
-      } catch (e) {
-        console.error('[webhook abacatepay] erro ao buscar pra email (ignorado):', e.message);
-      }
-      // Meta Conversions API (CAPI) — envio server-side garantido, dedup com client-side via event_id
-      try {
-        let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
-        // Fallback: se a coluna customer_email ainda não existir, refaz sem ela
-        if (!Array.isArray(fullRows) || !fullRows[0]) {
-          fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
-        }
-        const fullOrder = fullRows?.[0];
-        if (fullOrder && !fullOrder.meta_capi_sent) {
-          const result = await sendPurchaseToMeta(fullOrder);
-          if (result?.ok) {
-            await supaFetch('PATCH', `orders?id=eq.${o.id}`, { meta_capi_sent: true });
-          }
-        }
-      } catch (e) {
-        console.error('[webhook abacatepay] CAPI falhou (ignorado):', e.message);
-      }
-    }
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('[webhook abacatepay] erro:', e.message);
-    res.status(500).json({ error: 'erro interno' });
-  }
-});
+// /api/webhooks/abacatepay extraido pra routes/webhookRoutes.js na Fase F.6
 
 // Valida o pagamento no InfinitePay e marca o pedido como pago
 app.post('/api/pay/verify', async (req, res) => {
