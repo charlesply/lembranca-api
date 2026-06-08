@@ -24,6 +24,7 @@ const adminRoutes = require('./routes/adminRoutes');
 const diagRoutes = require('./routes/diagRoutes');
 const cronRoutes = require('./routes/cronRoutes');
 const miscRoutes = require('./routes/miscRoutes');
+const sunoRoutes = require('./routes/sunoRoutes');
 
 // Multer config: aceita audio ate 25MB (limite do Whisper)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -43,6 +44,7 @@ app.use(adminRoutes);
 app.use(diagRoutes);
 app.use(cronRoutes);
 app.use(miscRoutes);
+app.use(sunoRoutes);
 
 const PORT = process.env.PORT || 3000;
 const SUNO_COOKIE = process.env.SUNO_COOKIE || '';
@@ -72,61 +74,9 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'suno-api-lite', version: '4.0.0', gpt_enabled: !!OPENAI_API_KEY, audio_edit: AUDIO_EDIT_URL_LOCAL, inngest: true });
 });
 
-// Servir previews
-app.get('/api/preview/:filename', async (req, res) => {
-  const filename = req.params.filename;
-  const filePath = path.join(PREVIEW_DIR, filename);
-  // AUTO-CURA: o disco é efêmero (redeploy apaga). Se o arquivo sumiu, regenera da fonte (Suno CDN).
-  if (!fs.existsSync(filePath)) {
-    try {
-      const rows = await supaFetch('GET', `orders?status=eq.preview_sent&original_audio_url=not.is.null&select=id,original_audio_url,preview_audio_url&order=created_at.desc&limit=120`);
-      const o = (Array.isArray(rows) ? rows : []).find(r => (r.preview_audio_url || '').endsWith(filename));
-      if (o && o.original_audio_url) {
-        const title = decodeURIComponent(filename).replace(/_preview\.mp3$/i, '').replace(/_/g, ' ');
-        console.log(`[Preview self-heal] regenerando ${filename} (order ${o.id})`);
-        await createPreviewFromUrl(o.original_audio_url, o.id, title);
-      }
-    } catch (e) { console.error('[Preview self-heal] falhou:', e.message); }
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Preview nao encontrado.' });
-  }
-  res.setHeader('Content-Type', 'audio/mpeg');
-  res.setHeader('Content-Disposition', `inline; filename="${decodeURIComponent(filename)}"`);
-  fs.createReadStream(filePath).pipe(res);
-});
+// 8 rotas Suno proxy + file serves + transcribe extraidas pra routes/sunoRoutes.js na Fase F.5
 
-// Servir originais
-app.get('/api/original/:filename', (req, res) => {
-  const filePath = path.join(ORIGINALS_DIR, req.params.filename);
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Original nao encontrado.' });
-  res.setHeader('Content-Type', 'audio/mpeg');
-  const friendlyName = decodeURIComponent(req.params.filename);
-  res.setHeader('Content-Disposition', `attachment; filename="${friendlyName}"`);
-  fs.createReadStream(filePath).pipe(res);
-});
 
-// PROXY DE DOWNLOAD — força o download (Content-Disposition: attachment) de arquivos remotos.
-// Resolve o problema do iOS/mobile que ignora o atributo download em links cross-origin (toca em vez de baixar).
-app.get('/api/download', async (req, res) => {
-  try {
-    const url = (req.query.url || '').toString();
-    let name = (req.query.name || 'arquivo').toString().replace(/[^a-zA-Z0-9._ ()-]/g, '').slice(0, 80) || 'arquivo';
-    let host;
-    try { host = new URL(url).hostname.toLowerCase(); } catch (_) { return res.status(400).json({ error: 'url invalida' }); }
-    // whitelist de hosts (anti-SSRF / open-proxy)
-    const ok = host.endsWith('.suno.ai') || host.endsWith('.supabase.co') || host.endsWith('.linkarbox.app') || host === 'cdn1.suno.ai' || host === 'cdn2.suno.ai';
-    if (!ok) return res.status(403).json({ error: 'host nao permitido' });
-    const upstream = await axios.get(url, { responseType: 'stream', timeout: 60000, maxContentLength: Infinity, maxBodyLength: Infinity });
-    const ct = upstream.headers['content-type'] || (/\.mp4$/i.test(name) ? 'video/mp4' : 'audio/mpeg');
-    if (!/\.(mp3|mp4|wav|m4a)$/i.test(name)) name += /video/i.test(ct) ? '.mp4' : '.mp3';
-    res.setHeader('Content-Type', ct);
-    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
-    if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
-    upstream.data.pipe(res);
-  } catch (e) {
-    console.error('[/api/download] erro:', e.message);
-    res.status(502).json({ error: 'falha no download' });
-  }
-});
 
 // Rotas de diagnóstico/debug (/api/diag, /api/test-client, /api/test-preview,
 // /api/playwright_*, /api/keepwarm_test, /api/active_cookie) extraídas pra
@@ -145,122 +95,10 @@ app.get('/api/download', async (req, res) => {
 // /api/read_receipt extraido pra routes/miscRoutes.js na Fase F.4
 // /api/cookie_health extraído pra routes/diagRoutes.js na Fase F.2
 
-// GET /api/get_limit
-app.get('/api/get_limit', async (req, res) => {
-  try {
-    const c = await getClient();
-    res.json(await c.getLimit());
-  } catch (err) {
-    console.error('[/api/get_limit]', err.message);
-    if (isAuthError(err.message)) resetClient();
-    res.status(500).json({ error: err.message });
-  }
-});
 
-// POST /api/custom_generate
-app.post('/api/custom_generate', async (req, res) => {
-  try {
-    const c = await getClient();
-    const { prompt, tags, title, model, make_instrumental, negative_tags, wait_audio } = req.body;
-    res.json(await c.customGenerate({ prompt, tags, title, model, make_instrumental, negative_tags, wait_audio }));
-  } catch (err) {
-    // DEBUG: expor detalhes completos do erro do Suno
-    const sunoStatus = err.response?.status;
-    const sunoData = err.response?.data;
-    console.error('[/api/custom_generate]', err.message, 'sunoStatus:', sunoStatus, 'sunoData:', JSON.stringify(sunoData).substring(0, 500));
-    if (isAuthError(err.message)) { resetClient(); res.status(401).json({ error: 'Cookie expirado.' }); }
-    else res.status(500).json({
-      error: err.message,
-      suno_status: sunoStatus,
-      suno_error_type: sunoData?.error_type,
-      suno_detail: sunoData?.detail,
-      suno_data: sunoData,
-    });
-  }
-});
 
-// POST /api/generate
-app.post('/api/generate', async (req, res) => {
-  try {
-    const c = await getClient();
-    const { prompt, model, make_instrumental, wait_audio } = req.body;
-    res.json(await c.generate({ prompt, model, make_instrumental, wait_audio }));
-  } catch (err) {
-    console.error('[/api/generate]', err.message);
-    if (isAuthError(err.message)) resetClient();
-    res.status(500).json({ error: err.message });
-  }
-});
 
-// GET /api/get?ids=xxx,yyy
-app.get('/api/get', async (req, res) => {
-  try {
-    const c = await getClient();
-    res.json(await c.getClips(req.query.ids || ''));
-  } catch (err) {
-    console.error('[/api/get]', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
 
-// POST /api/transcribe - Whisper audio transcription
-app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo de audio enviado.' });
-  const buf = req.file.buffer;
-  const mime = req.file.mimetype || 'audio/webm';
-  console.log(`[Transcribe] ${(buf.length / 1024).toFixed(0)}KB ${mime}`);
-
-  // 1) AssemblyAI (primario \u2014 igual ao n8n/site antigo, melhor p/ PT)
-  const AAI = process.env.ASSEMBLYAI_API_KEY || '';
-  if (AAI) {
-    try {
-      const up = await axios.post('https://api.assemblyai.com/v2/upload', buf, {
-        headers: { Authorization: AAI, 'Content-Type': 'application/octet-stream' },
-        timeout: 60000, maxBodyLength: Infinity, maxContentLength: Infinity,
-      });
-      const upUrl = up.data && up.data.upload_url;
-      if (!upUrl) throw new Error('sem upload_url');
-      const sub = await axios.post('https://api.assemblyai.com/v2/transcript',
-        { audio_url: upUrl, language_code: 'pt', speech_models: ['universal-3-pro'] },
-        { headers: { Authorization: AAI, 'Content-Type': 'application/json' }, timeout: 30000 });
-      const id = sub.data && sub.data.id;
-      if (!id) throw new Error('sem id');
-      for (let i = 0; i < 30; i++) {
-        await new Promise(r => setTimeout(r, 2000));
-        const pr = await axios.get('https://api.assemblyai.com/v2/transcript/' + id, { headers: { Authorization: AAI }, timeout: 10000 });
-        if (pr.data && pr.data.status === 'completed') {
-          const text = (pr.data.text || '').trim();
-          console.log(`[Transcribe] \u2705 AssemblyAI (${text.length} chars)`);
-          return res.json({ text, provider: 'assemblyai' });
-        }
-        if (pr.data && pr.data.status === 'error') throw new Error(pr.data.error || 'aai error');
-      }
-      throw new Error('assemblyai timeout');
-    } catch (e) {
-      console.error('[Transcribe] AssemblyAI falhou, fallback Whisper:', e.response?.data || e.message);
-    }
-  }
-
-  // 2) Whisper (fallback)
-  if (!OPENAI_API_KEY) return res.status(500).json({ error: 'transcricao indisponivel' });
-  try {
-    const form = new FormData();
-    form.append('file', buf, { filename: 'audio.webm', contentType: mime });
-    form.append('model', 'whisper-1');
-    form.append('language', 'pt');
-    form.append('response_format', 'text');
-    const resp = await axios.post('https://api.openai.com/v1/audio/transcriptions', form, {
-      headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}`, ...form.getHeaders() },
-      timeout: 60000, maxContentLength: 30 * 1024 * 1024,
-    });
-    const text = typeof resp.data === 'string' ? resp.data.trim() : resp.data.text?.trim() || '';
-    console.log(`[Transcribe] \u2705 Whisper (${text.length} chars)`);
-    res.json({ text, provider: 'whisper' });
-  } catch (err) {
-    console.error('[/api/transcribe]', err.response?.data || err.message);
-    res.status(500).json({ error: 'Falha na transcricao: ' + (err.response?.data?.error?.message || err.message) });
-  }
-});
 
 // /api/chat/ack e /api/generate_and_notify extraidos pra routes/miscRoutes.js na Fase F.4
 
