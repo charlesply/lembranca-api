@@ -22,6 +22,7 @@ const { getClient, resetClient, isAuthError } = require('./lib/suno');
 // ═══ Routers extraídos (refactor Fase F) ═══
 const adminRoutes = require('./routes/adminRoutes');
 const diagRoutes = require('./routes/diagRoutes');
+const cronRoutes = require('./routes/cronRoutes');
 
 // Multer config: aceita audio ate 25MB (limite do Whisper)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -39,6 +40,7 @@ app.use(express.json());
 //     traz seu próprio prefixo /api/... ═══
 app.use(adminRoutes);
 app.use(diagRoutes);
+app.use(cronRoutes);
 
 const PORT = process.env.PORT || 3000;
 const SUNO_COOKIE = process.env.SUNO_COOKIE || '';
@@ -129,169 +131,12 @@ app.get('/api/download', async (req, res) => {
 // routes/diagRoutes.js na Fase F.2
 
 // GET /api/keepwarm_run — forca um tick do Keep-Warm e SALVA na tabela suno_session.
-// Usado pra validar a Fase 2b (cron salvando). Aditivo: ninguem consome a tabela ainda.
-app.get('/api/keepwarm_run', async (req, res) => {
-  try {
-    const { runKeepWarmOnce } = require('./lib/keepWarm');
-    const r = await runKeepWarmOnce('manual');
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/upsell_video_run — forca um tick do cron de video personalizado (upsell).
-app.get('/api/upsell_video_run', async (req, res) => {
-  try {
-    const { runUpsellVideoOnce } = require('./lib/upsellVideo');
-    res.json(await runUpsellVideoOnce('manual'));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/video_brinde_run — forca um tick do cron de video de brinde (pra validar/testar).
-app.get('/api/video_brinde_run', async (req, res) => {
-  try {
-    const { runVideoBrindeOnce } = require('./lib/videoBrinde');
-    res.json(await runVideoBrindeOnce('manual'));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/monitor_run — força um resumo do funil do site pro admin (pra testar na hora).
-app.get('/api/monitor_run', async (req, res) => {
-  try {
-    const { runSiteMonitorOnce } = require('./lib/siteMonitor');
-    res.json(await runSiteMonitorOnce('manual'));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/daily_report_run?send=1 — relatorio completo do dia (Brasilia). send=1 envia pro admin; sem send = so retorna o texto.
-app.get('/api/daily_report_run', async (req, res) => {
-  try {
-    const { runDailyReportOnce } = require('./lib/dailyReport');
-    const send = req.query.send === '1' || req.query.send === 'true';
-    const opts = { send };
-    if (req.query.closeYesterday === '1' || req.query.yesterday === '1') opts.closeYesterday = true;
-    if (req.query.today === '1') opts.closeYesterday = false;
-    const r = await runDailyReportOnce(opts);
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
+// /api/keepwarm_run, /api/upsell_video_run, /api/video_brinde_run,
+// /api/monitor_run, /api/daily_report_run, /api/cleanup_run,
+// /api/second_version_run, /api/regen_and_send, /api/preview_sender_run,
+// /api/retry_stuck_run, /api/recovery/*, /api/leadstage/run, /api/campaign/*
+// extraídos pra routes/cronRoutes.js na Fase F.3
 // /api/admin_command e /api/admin/* extraídos pra routes/adminRoutes.js na Fase F.1
-// GET /api/cleanup_run?dry=1 — limpeza de midia/mensagens >7 dias. dry=1 = simula SEM apagar.
-app.get('/api/cleanup_run', async (req, res) => {
-  try {
-    const { runCleanupOnce } = require('./lib/storageCleanup');
-    const dry = req.query.dry === '1' || req.query.dry === 'true';
-    res.json(await runCleanupOnce('manual', dry));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/second_version_run?dry=1 — 2a versao + indicacao ~3h pos-entrega. dry=1 = so lista quem receberia.
-app.get('/api/second_version_run', async (req, res) => {
-  try {
-    const { runSecondVersionOnce } = require('./lib/secondVersionBrinde');
-    const dry = req.query.dry === '1' || req.query.dry === 'true';
-    res.json(await runSecondVersionOnce('manual', dry));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// POST /api/regen_and_send — refaz/repete/grupo: cria pedido + gera + envia previa auto.
-// body: { phone, honoreeName, relationship, story, style, voice, mood }
-app.post('/api/regen_and_send', async (req, res) => {
-  try {
-    const { regenAndSend } = require('./lib/regenPreview');
-    const out = await regenAndSend(req.body || {});
-    res.json({ ok: true, ...out });
-  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/preview_sender_run — forca um tick do envio automatico de previa (testar).
-app.get('/api/preview_sender_run', async (req, res) => {
-  try {
-    const { runPreviewSenderOnce } = require('./lib/regenPreview');
-    res.json(await runPreviewSenderOnce('manual'));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/retry_stuck_run — forca um tick do retry inteligente (pra validar/testar).
-app.get('/api/retry_stuck_run', async (req, res) => {
-  try {
-    const { runRetryStuckOnce } = require('./lib/retryStuck');
-    const r = await runRetryStuckOnce('manual');
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// ===== FUNIL DE RECUPERAÇÃO (leads quentes: prévia enviada, não pago) =====
-// GET /api/recovery/preview — SIMULAÇÃO (dry-run). Mostra QUEM receberia e QUAL mensagem, sem enviar nada.
-app.get('/api/recovery/preview', async (req, res) => {
-  try {
-    const { runRecoveryOnce } = require('./lib/recoveryFunnel');
-    const r = await runRecoveryOnce({ dryRun: true, maxPerRun: 999, onlyPhone: req.query.phone || null });
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/recovery/test?phone=XXXX — envia a mensagem de recuperação REAL pra UM telefone (teste de 1 lead).
-app.get('/api/recovery/test', async (req, res) => {
-  try {
-    if (!req.query.phone) return res.status(400).json({ ok: false, error: 'informe ?phone=' });
-    const { runRecoveryOnce } = require('./lib/recoveryFunnel');
-    const r = await runRecoveryOnce({ dryRun: false, maxPerRun: 1, onlyPhone: req.query.phone });
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/recovery/run — roda o funil. SEM ?send=1 é SIMULAÇÃO. Com ?send=1 envia de verdade (respeita o teto).
-app.get('/api/recovery/run', async (req, res) => {
-  try {
-    const { runRecoveryOnce } = require('./lib/recoveryFunnel');
-    const r = await runRecoveryOnce({ dryRun: req.query.send !== '1' });
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/leadstage/run — recalcula o lead_stage de todos os pedidos (manual). Seguro (só classifica).
-app.get('/api/leadstage/run', async (req, res) => {
-  try {
-    const { runLeadStageOnce } = require('./lib/leadStage');
-    res.json(await runLeadStageOnce('manual'));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// ===== CAMPANHAS AUTOMÁTICAS por estágio (cadência) + controle manual =====
-// GET /api/campaign/auto?dry=1 — roda a cadência automática. SEM ?send=1 é SIMULAÇÃO.
-app.get('/api/campaign/auto', async (req, res) => {
-  try {
-    const { runCampaignsAuto } = require('./lib/campaigns');
-    res.json(await runCampaignsAuto({ dryRun: req.query.send !== '1' }));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/campaign/preview?campaign=promo[&all=1] — SIMULAÇÃO de UMA campanha (não envia).
-app.get('/api/campaign/preview', async (req, res) => {
-  try {
-    const { runCampaign } = require('./lib/campaigns');
-    res.json(await runCampaign({ campaign: req.query.campaign, dryRun: true, max: 999, all: req.query.all === '1' }));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/campaign/test?campaign=X&phone=Y — envia UMA campanha REAL pra 1 telefone (teste).
-app.get('/api/campaign/test', async (req, res) => {
-  try {
-    if (!req.query.phone) return res.status(400).json({ ok: false, error: 'informe ?phone=' });
-    const { runCampaign } = require('./lib/campaigns');
-    res.json(await runCampaign({ campaign: req.query.campaign, dryRun: false, testPhone: req.query.phone, max: 1, all: true }));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/campaign/send?campaign=X&max=N[&all=1] — envia UMA campanha de VERDADE (default só hoje).
-app.get('/api/campaign/send', async (req, res) => {
-  try {
-    const { runCampaign } = require('./lib/campaigns');
-    const max = req.query.max ? parseInt(req.query.max, 10) : undefined;
-    res.json(await runCampaign({ campaign: req.query.campaign, dryRun: false, max, all: req.query.all === '1' }));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
 
 // POST /api/read_receipt — lê comprovante de pagamento (PDF/imagem) e extrai valor/data/método.
 // Body: {base64,mime} OU {url} OU {phone,msgId}. Resolve o cliente que manda PDF do banco.
