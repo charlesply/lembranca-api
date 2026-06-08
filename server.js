@@ -19,6 +19,9 @@ const { createPreviewFromUrl, PREVIEW_DIR, ORIGINALS_DIR, AUDIO_EDIT_URL, SELF_U
 const { sendPurchaseToMeta } = require('./lib/metaCapi');
 const { getClient, resetClient, isAuthError } = require('./lib/suno');
 
+// ═══ Routers extraídos (refactor Fase F) ═══
+const adminRoutes = require('./routes/adminRoutes');
+
 // Multer config: aceita audio ate 25MB (limite do Whisper)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
@@ -30,6 +33,10 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 app.use(express.json());
+
+// ═══ Routers extraídos (Fase F) — montados no raiz pq cada router
+//     traz seu próprio prefixo /api/... ═══
+app.use(adminRoutes);
 
 const PORT = process.env.PORT || 3000;
 const SUNO_COOKIE = process.env.SUNO_COOKIE || '';
@@ -277,25 +284,7 @@ app.get('/api/daily_report_run', async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// POST /api/admin_command {cmd, phone} — processa comando do admin (TRAVADOS/VENDAS/PENDENTES/SUNO/RELATORIO) e responde no WhatsApp.
-// `sync=true` (opcional) AGUARDA o resultado e devolve erros inline pra debug.
-app.post('/api/admin_command', async (req, res) => {
-  try {
-    const { cmd, phone, sync } = req.body || {};
-    const { handleAdminCommand } = require('./lib/adminCommands');
-    if (sync) {
-      try {
-        await handleAdminCommand(cmd, phone);
-        return res.json({ ok: true, cmd, mode: 'sync' });
-      } catch (e) {
-        return res.json({ ok: false, cmd, mode: 'sync', error: e.message, stack: e.stack });
-      }
-    }
-    handleAdminCommand(cmd, phone).catch((e) => console.error('[admin_command] async erro:', e.message));
-    res.json({ ok: true, cmd });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
+// /api/admin_command e /api/admin/* extraídos pra routes/adminRoutes.js na Fase F.1
 // GET /api/cleanup_run?dry=1 — limpeza de midia/mensagens >7 dias. dry=1 = simula SEM apagar.
 app.get('/api/cleanup_run', async (req, res) => {
   try {
@@ -1700,101 +1689,7 @@ app.post('/api/regenerate', async (req, res) => {
   });
 });
 
-// ═══ Trigger manual do Suno monitor — varre orders sem URL de áudio ═══
-// GET /api/admin/suno_monitor_run?secret=XXX → executa varredura agora
-app.get('/api/admin/suno_monitor_run', async (req, res) => {
-  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
-  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const { runOnce } = require('./lib/sunoMonitor');
-    const r = await runOnce();
-    res.json({ ok: true, ...r });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ═══ Trigger manual do fallback pra UMA order específica ═══
-// GET /api/admin/suno_rescue?id=ORDER_ID&secret=XXX
-app.get('/api/admin/suno_rescue', async (req, res) => {
-  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
-  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
-  if (!_isUuid(req.query.id)) return res.status(400).json({ error: 'id inválido' });
-  try {
-    const { ensureAudioUrls } = require('./lib/sunoFallback');
-    const r = await ensureAudioUrls(req.query.id, { maxRetries: 5 });
-    res.json(r);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ═══ Trigger manual do CAPI monitor — útil pra debug e dashboard admin ═══
-// GET /api/admin/capi_monitor_run?secret=XXX → executa a varredura agora
-app.get('/api/admin/capi_monitor_run', async (req, res) => {
-  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
-  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const { runOnce } = require('./lib/capiMonitor');
-    const r = await runOnce();
-    res.json({ ok: true, ...r });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ═══ Trigger manual do Email Delivery monitor ═══
-app.get('/api/admin/email_delivery_run', async (req, res) => {
-  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
-  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const { runOnce } = require('./lib/emailDeliveryMonitor');
-    const r = await runOnce();
-    res.json({ ok: true, ...r });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ═══ Envia email de teste pra validar template + DNS (não toca no DB) ═══
-// GET /api/admin/email_test?secret=XXX&to=alguem@email.com&orderId=optional
-app.get('/api/admin/email_test', async (req, res) => {
-  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
-  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const to = String(req.query.to || '').trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return res.status(400).json({ error: 'param to= obrigatório (email válido)' });
-    // Dataset fake só pra renderizar — não persiste no DB
-    const fakeOrder = {
-      id: req.query.orderId || '00000000-0000-0000-0000-000000000000',
-      honoree_name: 'Maria',
-      customer_name: 'Cliente Teste',
-      customer_email: to,
-      plan: req.query.plan || 'completa',
-      original_audio_url: 'https://tempfile.aiquickdraw.com/r/teste.mp3', // só pra passar no check de hasMedia
-      email_delivery_sent: false,
-    };
-    const { renderHtml } = require('./lib/emailDelivery');
-    // Envio direto via Resend pra não marcar a flag de orders
-    if (!process.env.RESEND_API_KEY) return res.status(503).json({ error: 'RESEND_API_KEY não configurada' });
-    const r = await require('axios').post('https://api.resend.com/emails', {
-      from: `${process.env.EMAIL_FROM_NAME || 'Bia da Lembrança Cantada'} <${process.env.EMAIL_FROM || 'bia@lembrancacantada.com'}>`,
-      to: [to],
-      reply_to: process.env.EMAIL_REPLY_TO || process.env.EMAIL_FROM || 'bia@lembrancacantada.com',
-      subject: '🎵 [TESTE] Sua música para Maria está pronta!',
-      html: renderHtml({
-        honoree: fakeOrder.honoree_name,
-        customerName: fakeOrder.customer_name,
-        plan: fakeOrder.plan,
-        deliveryUrl: `${process.env.APP_URL || 'https://app.lembrancacantada.com'}/p/${fakeOrder.id}`,
-      }),
-      tags: [{ name: 'kind', value: 'test' }],
-    }, {
-      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      timeout: 15000,
-    });
-    res.json({ ok: true, id: r.data?.id });
-  } catch (e) {
-    res.status(500).json({ error: e.response?.data || e.message });
-  }
-});
-
+// /api/admin/* extraídos pra routes/adminRoutes.js na Fase F.1
 // ═══ Inngest handler — recebe webhooks do Inngest Cloud ═══
 app.use('/api/inngest', serve({
   client: inngest,
