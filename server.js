@@ -1535,10 +1535,10 @@ app.post('/api/webhooks/abacatepay', async (req, res) => {
       }
       // Meta Conversions API (CAPI) — envio server-side garantido, dedup com client-side via event_id
       try {
-        let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent`);
+        let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
         // Fallback: se a coluna customer_email ainda não existir, refaz sem ela
         if (!Array.isArray(fullRows) || !fullRows[0]) {
-          fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent`);
+          fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
         }
         const fullOrder = fullRows?.[0];
         if (fullOrder && !fullOrder.meta_capi_sent) {
