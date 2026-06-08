@@ -19,6 +19,11 @@ const { createPreviewFromUrl, PREVIEW_DIR, ORIGINALS_DIR, AUDIO_EDIT_URL, SELF_U
 const { sendPurchaseToMeta } = require('./lib/metaCapi');
 const { getClient, resetClient, isAuthError } = require('./lib/suno');
 
+// ═══ Routers extraídos (refactor Fase F) ═══
+const adminRoutes = require('./routes/adminRoutes');
+const diagRoutes = require('./routes/diagRoutes');
+const cronRoutes = require('./routes/cronRoutes');
+
 // Multer config: aceita audio ate 25MB (limite do Whisper)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
@@ -30,6 +35,12 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 app.use(express.json());
+
+// ═══ Routers extraídos (Fase F) — montados no raiz pq cada router
+//     traz seu próprio prefixo /api/... ═══
+app.use(adminRoutes);
+app.use(diagRoutes);
+app.use(cronRoutes);
 
 const PORT = process.env.PORT || 3000;
 const SUNO_COOKIE = process.env.SUNO_COOKIE || '';
@@ -115,303 +126,17 @@ app.get('/api/download', async (req, res) => {
   }
 });
 
-// Diagnostic
-app.get('/api/diag', async (req, res) => {
-  const parsed = require('cookie').parse(SUNO_COOKIE || '');
-  let clientReady = false;
-  try { clientReady = !!(await getClient()); } catch (_) {}
-  res.json({
-    cookie_length: SUNO_COOKIE.length,
-    has_client_key: SUNO_COOKIE.includes('__client'),
-    parsed_keys: Object.keys(parsed),
-    client_initiated: clientReady,
-    gpt_enabled: !!OPENAI_API_KEY,
-    supabase_configured: !!(process.env.SUPABASE_KEY),
-    inngest_enabled: true,
-    inngest_concurrency: 2,
-  });
-});
-
-// Debug: testar client init síncrono
-app.get('/api/test-client', async (req, res) => {
-  try {
-    const c = await getClient();
-    res.json({ ok: true, client_ready: !!c });
-  } catch (err) {
-    res.json({ ok: false, error: err.message });
-  }
-});
-
-// Debug: testar pipeline Audio-Edit com URL de áudio
-// GET /api/test-preview?url=https://cdn1.suno.ai/...
-app.get('/api/test-preview', async (req, res) => {
-  const { url } = req.query;
-  if (!url) return res.status(400).json({ error: 'Passe ?url=https://cdn1.suno.ai/xxx.mp3' });
-  try {
-    console.log(`[test-preview] Testando Audio-Edit com: ${url.substring(0, 70)}...`);
-    const preview = await createPreviewFromUrl(url, 'test-' + Date.now());
-    const previewUrl = `${SELF_URL}/api/preview/${preview.previewFilename}`;
-    console.log(`[test-preview] ✅ OK: ${previewUrl}`);
-    res.json({ ok: true, preview_url: previewUrl, filename: preview.previewFilename });
-  } catch (err) {
-    const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-    console.error(`[test-preview] ❌ ERRO:`, detail);
-    res.status(500).json({ ok: false, error: detail, audio_edit_url: AUDIO_EDIT_URL_LOCAL });
-  }
-});
-
-// ═══ PLAYWRIGHT DRIVER ENDPOINTS ═══
-app.get('/api/playwright_status', async (req, res) => {
-  try {
-    const PlaywrightDriver = require('./PlaywrightDriver');
-    res.json({ ok: true, ...await PlaywrightDriver.status() });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-app.post('/api/test_playwright', async (req, res) => {
-  const t0 = Date.now();
-  try {
-    const PlaywrightDriver = require('./PlaywrightDriver');
-    const { prompt, tags, title, vocal_gender, weirdness, style_weight, lyrics_mode, wait_audio } = req.body || {};
-    if (!prompt && !tags) return res.status(400).json({ ok: false, error: 'prompt ou tags obrigatorio' });
-    const clips = await PlaywrightDriver.customGenerate({
-      prompt, tags, title, model: 'chirp-fenix',
-      vocal_gender, weirdness, style_weight, lyrics_mode,
-      wait_audio: wait_audio !== false,
-    });
-    res.json({ ok: true, elapsed_ms: Date.now() - t0, clips_count: clips.length, clips });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, code: e.code, suno_status: e.response?.status });
-  }
-});
-
-app.post('/api/playwright_shutdown', async (req, res) => {
-  try {
-    const PlaywrightDriver = require('./PlaywrightDriver');
-    await PlaywrightDriver.shutdown();
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// ═══ KEEP-WARM Fase 1 (isolado) — testa renovar a sessao via browser ═══
-// NAO toca na geracao. Retorna se a sessao foi renovada (cookie quente).
-// ?full=1 retorna o cookie completo (pra Fase 2 usar); senao so o diagnostico.
-app.get('/api/keepwarm_test', async (req, res) => {
-  try {
-    const PlaywrightDriver = require('./PlaywrightDriver');
-    const r = await PlaywrightDriver.keepWarm();
-    const out = {
-      ok: true,
-      logged_in: r.logged_in,
-      cookie_length: r.cookie_length,
-      n_keys: r.n_keys,
-      session_exp_in_s: r.session_exp_in_s,   // fresco se ~3000+
-      client_exp_days: r.client_exp_days,
-      keys: r.keys,
-    };
-    if (req.query.full === '1') out.cookie = r.cookie;
-    res.json(out);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message, code: e.code }); }
-});
-
-// GET /api/active_cookie — inspeciona qual cookie o getClient() usaria AGORA
-// (warm da tabela vs env), sem alterar nada. Pra validar a Fase 2c antes de ligar a flag.
-app.get('/api/active_cookie', async (req, res) => {
-  try {
-    const { getActiveCookie } = require('./lib/suno');
-    const r = await getActiveCookie();
-    res.json({
-      source: r.source,
-      cookie_length: (r.cookie || '').length,
-      age_min: r.age_min,
-      warm_age_min: r.warm_age_min,
-      use_warm_flag: String(process.env.USE_WARM_COOKIE).toLowerCase() === 'true',
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+// Rotas de diagnóstico/debug (/api/diag, /api/test-client, /api/test-preview,
+// /api/playwright_*, /api/keepwarm_test, /api/active_cookie) extraídas pra
+// routes/diagRoutes.js na Fase F.2
 
 // GET /api/keepwarm_run — forca um tick do Keep-Warm e SALVA na tabela suno_session.
-// Usado pra validar a Fase 2b (cron salvando). Aditivo: ninguem consome a tabela ainda.
-app.get('/api/keepwarm_run', async (req, res) => {
-  try {
-    const { runKeepWarmOnce } = require('./lib/keepWarm');
-    const r = await runKeepWarmOnce('manual');
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/upsell_video_run — forca um tick do cron de video personalizado (upsell).
-app.get('/api/upsell_video_run', async (req, res) => {
-  try {
-    const { runUpsellVideoOnce } = require('./lib/upsellVideo');
-    res.json(await runUpsellVideoOnce('manual'));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/video_brinde_run — forca um tick do cron de video de brinde (pra validar/testar).
-app.get('/api/video_brinde_run', async (req, res) => {
-  try {
-    const { runVideoBrindeOnce } = require('./lib/videoBrinde');
-    res.json(await runVideoBrindeOnce('manual'));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/monitor_run — força um resumo do funil do site pro admin (pra testar na hora).
-app.get('/api/monitor_run', async (req, res) => {
-  try {
-    const { runSiteMonitorOnce } = require('./lib/siteMonitor');
-    res.json(await runSiteMonitorOnce('manual'));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/daily_report_run?send=1 — relatorio completo do dia (Brasilia). send=1 envia pro admin; sem send = so retorna o texto.
-app.get('/api/daily_report_run', async (req, res) => {
-  try {
-    const { runDailyReportOnce } = require('./lib/dailyReport');
-    const send = req.query.send === '1' || req.query.send === 'true';
-    const opts = { send };
-    if (req.query.closeYesterday === '1' || req.query.yesterday === '1') opts.closeYesterday = true;
-    if (req.query.today === '1') opts.closeYesterday = false;
-    const r = await runDailyReportOnce(opts);
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// POST /api/admin_command {cmd, phone} — processa comando do admin (TRAVADOS/VENDAS/PENDENTES/SUNO/RELATORIO) e responde no WhatsApp.
-// `sync=true` (opcional) AGUARDA o resultado e devolve erros inline pra debug.
-app.post('/api/admin_command', async (req, res) => {
-  try {
-    const { cmd, phone, sync } = req.body || {};
-    const { handleAdminCommand } = require('./lib/adminCommands');
-    if (sync) {
-      try {
-        await handleAdminCommand(cmd, phone);
-        return res.json({ ok: true, cmd, mode: 'sync' });
-      } catch (e) {
-        return res.json({ ok: false, cmd, mode: 'sync', error: e.message, stack: e.stack });
-      }
-    }
-    handleAdminCommand(cmd, phone).catch((e) => console.error('[admin_command] async erro:', e.message));
-    res.json({ ok: true, cmd });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/cleanup_run?dry=1 — limpeza de midia/mensagens >7 dias. dry=1 = simula SEM apagar.
-app.get('/api/cleanup_run', async (req, res) => {
-  try {
-    const { runCleanupOnce } = require('./lib/storageCleanup');
-    const dry = req.query.dry === '1' || req.query.dry === 'true';
-    res.json(await runCleanupOnce('manual', dry));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/second_version_run?dry=1 — 2a versao + indicacao ~3h pos-entrega. dry=1 = so lista quem receberia.
-app.get('/api/second_version_run', async (req, res) => {
-  try {
-    const { runSecondVersionOnce } = require('./lib/secondVersionBrinde');
-    const dry = req.query.dry === '1' || req.query.dry === 'true';
-    res.json(await runSecondVersionOnce('manual', dry));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// POST /api/regen_and_send — refaz/repete/grupo: cria pedido + gera + envia previa auto.
-// body: { phone, honoreeName, relationship, story, style, voice, mood }
-app.post('/api/regen_and_send', async (req, res) => {
-  try {
-    const { regenAndSend } = require('./lib/regenPreview');
-    const out = await regenAndSend(req.body || {});
-    res.json({ ok: true, ...out });
-  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/preview_sender_run — forca um tick do envio automatico de previa (testar).
-app.get('/api/preview_sender_run', async (req, res) => {
-  try {
-    const { runPreviewSenderOnce } = require('./lib/regenPreview');
-    res.json(await runPreviewSenderOnce('manual'));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/retry_stuck_run — forca um tick do retry inteligente (pra validar/testar).
-app.get('/api/retry_stuck_run', async (req, res) => {
-  try {
-    const { runRetryStuckOnce } = require('./lib/retryStuck');
-    const r = await runRetryStuckOnce('manual');
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// ===== FUNIL DE RECUPERAÇÃO (leads quentes: prévia enviada, não pago) =====
-// GET /api/recovery/preview — SIMULAÇÃO (dry-run). Mostra QUEM receberia e QUAL mensagem, sem enviar nada.
-app.get('/api/recovery/preview', async (req, res) => {
-  try {
-    const { runRecoveryOnce } = require('./lib/recoveryFunnel');
-    const r = await runRecoveryOnce({ dryRun: true, maxPerRun: 999, onlyPhone: req.query.phone || null });
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/recovery/test?phone=XXXX — envia a mensagem de recuperação REAL pra UM telefone (teste de 1 lead).
-app.get('/api/recovery/test', async (req, res) => {
-  try {
-    if (!req.query.phone) return res.status(400).json({ ok: false, error: 'informe ?phone=' });
-    const { runRecoveryOnce } = require('./lib/recoveryFunnel');
-    const r = await runRecoveryOnce({ dryRun: false, maxPerRun: 1, onlyPhone: req.query.phone });
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/recovery/run — roda o funil. SEM ?send=1 é SIMULAÇÃO. Com ?send=1 envia de verdade (respeita o teto).
-app.get('/api/recovery/run', async (req, res) => {
-  try {
-    const { runRecoveryOnce } = require('./lib/recoveryFunnel');
-    const r = await runRecoveryOnce({ dryRun: req.query.send !== '1' });
-    res.json(r);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/leadstage/run — recalcula o lead_stage de todos os pedidos (manual). Seguro (só classifica).
-app.get('/api/leadstage/run', async (req, res) => {
-  try {
-    const { runLeadStageOnce } = require('./lib/leadStage');
-    res.json(await runLeadStageOnce('manual'));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// ===== CAMPANHAS AUTOMÁTICAS por estágio (cadência) + controle manual =====
-// GET /api/campaign/auto?dry=1 — roda a cadência automática. SEM ?send=1 é SIMULAÇÃO.
-app.get('/api/campaign/auto', async (req, res) => {
-  try {
-    const { runCampaignsAuto } = require('./lib/campaigns');
-    res.json(await runCampaignsAuto({ dryRun: req.query.send !== '1' }));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/campaign/preview?campaign=promo[&all=1] — SIMULAÇÃO de UMA campanha (não envia).
-app.get('/api/campaign/preview', async (req, res) => {
-  try {
-    const { runCampaign } = require('./lib/campaigns');
-    res.json(await runCampaign({ campaign: req.query.campaign, dryRun: true, max: 999, all: req.query.all === '1' }));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/campaign/test?campaign=X&phone=Y — envia UMA campanha REAL pra 1 telefone (teste).
-app.get('/api/campaign/test', async (req, res) => {
-  try {
-    if (!req.query.phone) return res.status(400).json({ ok: false, error: 'informe ?phone=' });
-    const { runCampaign } = require('./lib/campaigns');
-    res.json(await runCampaign({ campaign: req.query.campaign, dryRun: false, testPhone: req.query.phone, max: 1, all: true }));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// GET /api/campaign/send?campaign=X&max=N[&all=1] — envia UMA campanha de VERDADE (default só hoje).
-app.get('/api/campaign/send', async (req, res) => {
-  try {
-    const { runCampaign } = require('./lib/campaigns');
-    const max = req.query.max ? parseInt(req.query.max, 10) : undefined;
-    res.json(await runCampaign({ campaign: req.query.campaign, dryRun: false, max, all: req.query.all === '1' }));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
+// /api/keepwarm_run, /api/upsell_video_run, /api/video_brinde_run,
+// /api/monitor_run, /api/daily_report_run, /api/cleanup_run,
+// /api/second_version_run, /api/regen_and_send, /api/preview_sender_run,
+// /api/retry_stuck_run, /api/recovery/*, /api/leadstage/run, /api/campaign/*
+// extraídos pra routes/cronRoutes.js na Fase F.3
+// /api/admin_command e /api/admin/* extraídos pra routes/adminRoutes.js na Fase F.1
 
 // POST /api/read_receipt — lê comprovante de pagamento (PDF/imagem) e extrai valor/data/método.
 // Body: {base64,mime} OU {url} OU {phone,msgId}. Resolve o cliente que manda PDF do banco.
@@ -422,52 +147,7 @@ app.post('/api/read_receipt', async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// GET /api/cookie_health — checagem proativa do SUNO_COOKIE (sem gastar creditos)
-// Usado por um Schedule do n8n pra avisar ANTES do cookie quebrar.
-app.get('/api/cookie_health', async (req, res) => {
-  const parsed = require('cookie').parse(process.env.SUNO_COOKIE || '');
-  // Chaves que o Clerk precisa pra estabelecer a sessao no browser.
-  // (a falta delas foi a causa do 422 token_validation_failed)
-  const essential = ['__client', '__client_uat', 'clerk_active_context', '__session'];
-  const missing = essential.filter(k => !parsed[k]);
-
-  // dias restantes ate o __client (refresh token) expirar
-  let clientDays = null;
-  try {
-    const p = JSON.parse(Buffer.from((parsed['__client'] || '').split('.')[1] + '==', 'base64').toString());
-    if (p.exp) clientDays = Math.floor((p.exp * 1000 - Date.now()) / 86400000);
-  } catch (_) {}
-
-  // sessao viva? (get_limit usa o token via Clerk)
-  let credits = null, getLimitOk = false;
-  try {
-    const c = await getClient();
-    const lim = await c.getLimit();
-    credits = lim.credits_left;
-    getLimitOk = true;
-  } catch (e) {
-    if (isAuthError(e.message)) resetClient();
-  }
-
-  const reasons = [];
-  if (missing.length) reasons.push('Cookie SEM chaves essenciais: ' + missing.join(', '));
-  if (clientDays != null && clientDays < 30) reasons.push('__client expira em ' + clientDays + ' dias');
-  if (!getLimitOk) reasons.push('get_limit falhou (sessão pode estar morta)');
-  if (credits != null && credits < 10) reasons.push('Créditos baixos: ' + credits);
-
-  const alert = reasons.length > 0;
-  res.json({
-    ok: true,
-    healthy: !alert,
-    alert,
-    reason: reasons.join(' | ') || 'tudo certo',
-    cookie_length: (process.env.SUNO_COOKIE || '').length,
-    missing_essential: missing,
-    client_expires_days: clientDays,
-    credits_left: credits,
-    get_limit_ok: getLimitOk,
-  });
-});
+// /api/cookie_health extraído pra routes/diagRoutes.js na Fase F.2
 
 // GET /api/get_limit
 app.get('/api/get_limit', async (req, res) => {
@@ -1700,101 +1380,7 @@ app.post('/api/regenerate', async (req, res) => {
   });
 });
 
-// ═══ Trigger manual do Suno monitor — varre orders sem URL de áudio ═══
-// GET /api/admin/suno_monitor_run?secret=XXX → executa varredura agora
-app.get('/api/admin/suno_monitor_run', async (req, res) => {
-  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
-  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const { runOnce } = require('./lib/sunoMonitor');
-    const r = await runOnce();
-    res.json({ ok: true, ...r });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ═══ Trigger manual do fallback pra UMA order específica ═══
-// GET /api/admin/suno_rescue?id=ORDER_ID&secret=XXX
-app.get('/api/admin/suno_rescue', async (req, res) => {
-  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
-  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
-  if (!_isUuid(req.query.id)) return res.status(400).json({ error: 'id inválido' });
-  try {
-    const { ensureAudioUrls } = require('./lib/sunoFallback');
-    const r = await ensureAudioUrls(req.query.id, { maxRetries: 5 });
-    res.json(r);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ═══ Trigger manual do CAPI monitor — útil pra debug e dashboard admin ═══
-// GET /api/admin/capi_monitor_run?secret=XXX → executa a varredura agora
-app.get('/api/admin/capi_monitor_run', async (req, res) => {
-  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
-  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const { runOnce } = require('./lib/capiMonitor');
-    const r = await runOnce();
-    res.json({ ok: true, ...r });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ═══ Trigger manual do Email Delivery monitor ═══
-app.get('/api/admin/email_delivery_run', async (req, res) => {
-  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
-  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const { runOnce } = require('./lib/emailDeliveryMonitor');
-    const r = await runOnce();
-    res.json({ ok: true, ...r });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ═══ Envia email de teste pra validar template + DNS (não toca no DB) ═══
-// GET /api/admin/email_test?secret=XXX&to=alguem@email.com&orderId=optional
-app.get('/api/admin/email_test', async (req, res) => {
-  const expected = process.env.ADMIN_API_SECRET || process.env.ABACATEPAY_WEBHOOK_SECRET;
-  if (!expected || req.query.secret !== expected) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const to = String(req.query.to || '').trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return res.status(400).json({ error: 'param to= obrigatório (email válido)' });
-    // Dataset fake só pra renderizar — não persiste no DB
-    const fakeOrder = {
-      id: req.query.orderId || '00000000-0000-0000-0000-000000000000',
-      honoree_name: 'Maria',
-      customer_name: 'Cliente Teste',
-      customer_email: to,
-      plan: req.query.plan || 'completa',
-      original_audio_url: 'https://tempfile.aiquickdraw.com/r/teste.mp3', // só pra passar no check de hasMedia
-      email_delivery_sent: false,
-    };
-    const { renderHtml } = require('./lib/emailDelivery');
-    // Envio direto via Resend pra não marcar a flag de orders
-    if (!process.env.RESEND_API_KEY) return res.status(503).json({ error: 'RESEND_API_KEY não configurada' });
-    const r = await require('axios').post('https://api.resend.com/emails', {
-      from: `${process.env.EMAIL_FROM_NAME || 'Bia da Lembrança Cantada'} <${process.env.EMAIL_FROM || 'bia@lembrancacantada.com'}>`,
-      to: [to],
-      reply_to: process.env.EMAIL_REPLY_TO || process.env.EMAIL_FROM || 'bia@lembrancacantada.com',
-      subject: '🎵 [TESTE] Sua música para Maria está pronta!',
-      html: renderHtml({
-        honoree: fakeOrder.honoree_name,
-        customerName: fakeOrder.customer_name,
-        plan: fakeOrder.plan,
-        deliveryUrl: `${process.env.APP_URL || 'https://app.lembrancacantada.com'}/p/${fakeOrder.id}`,
-      }),
-      tags: [{ name: 'kind', value: 'test' }],
-    }, {
-      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      timeout: 15000,
-    });
-    res.json({ ok: true, id: r.data?.id });
-  } catch (e) {
-    res.status(500).json({ error: e.response?.data || e.message });
-  }
-});
-
+// /api/admin/* extraídos pra routes/adminRoutes.js na Fase F.1
 // ═══ Inngest handler — recebe webhooks do Inngest Cloud ═══
 app.use('/api/inngest', serve({
   client: inngest,
