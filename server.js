@@ -29,6 +29,7 @@ const webhookRoutes = require('./routes/webhookRoutes');
 const payRoutes = require('./routes/payRoutes');
 const orderReadRoutes = require('./routes/orderReadRoutes');
 const orderWriteRoutes = require('./routes/orderWriteRoutes');
+const promoRoutes = require('./routes/promoRoutes');
 
 // Multer config: aceita audio ate 25MB (limite do Whisper)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -53,6 +54,7 @@ app.use(webhookRoutes);
 app.use(payRoutes);
 app.use(orderReadRoutes);
 app.use(orderWriteRoutes);
+app.use(promoRoutes);
 
 const PORT = process.env.PORT || 3000;
 const SUNO_COOKIE = process.env.SUNO_COOKIE || '';

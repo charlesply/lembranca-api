@@ -421,10 +421,11 @@ router.post('/api/order/:id/proof', upload.single('proof'), async (req, res) => 
       patch.payment_amount = expectedAmount;
       patch.plan = plan;
       patch.bill_id = o.bill_id || (`pix_${plan}_${id.slice(0, 8)}`);
-      // Plano 'completa' = R$29,90 = MUSICA + VIDEO KARAOKE. Marca o pedido
-      // como aguardando a foto que o cliente vai mandar no WhatsApp pra
-      // gerar o video personalizado. Mesma flag usada no /api/pay/verify.
-      if (plan === 'completa') {
+      // Qualquer plano com `includes_video: true` (completa, promo_namorados_2026)
+      // marca o pedido como aguardando a foto que o cliente vai mandar no
+      // WhatsApp pra gerar o video personalizado. Mesma flag usada no
+      // /api/pay/verify e em /api/pay/create.
+      if (PAY_PLANS[plan]?.includes_video) {
         patch.video_upsell_status = 'pending_photo';
       }
       // garante full_audio_urls
