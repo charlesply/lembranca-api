@@ -16,11 +16,9 @@ const axios = require('axios');
 
 const { supaFetch } = require('../lib/supabase');
 const { PAY_PLANS } = require('../lib/payPlans');
+const { isUuid: _isUuid } = require('../lib/validators');
 
 const router = express.Router();
-
-// Helper local — testa formato UUID (com ou sem hifens).
-const _isUuid = (s) => /^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$/.test(String(s || ''));
 
 // ═══════════════════════════════════════════════════════════════
 // PAGAMENTO — InfinitePay Checkout (LEGADO, mantido por links antigos):
