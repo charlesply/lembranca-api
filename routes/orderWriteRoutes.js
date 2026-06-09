@@ -16,17 +16,13 @@ const crypto = require('crypto');
 
 const { supaFetch } = require('../lib/supabase');
 const { PAY_PLANS } = require('../lib/payPlans');
+const { isUuid: _isUuid, clip: _clip } = require('../lib/validators');
 
 const router = express.Router();
 
 // Multer config local — aceita ate 25MB (foto/comprovante). Mesmo limite do
 // transcribe; o /proof tem cap adicional de 5MB checado dentro do handler.
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
-
-// Helpers locais — duplicados em orderReadRoutes.js. Vao virar lib/validators
-// quando outra rota precisar.
-const _isUuid = (s) => /^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$/.test(String(s || ''));
-const _clip = (v, n) => (v == null || v === '' ? null : String(v).slice(0, n));
 
 // N8N_PAY_WEBHOOK_URL: ja avaliado em server.js tbm pq /api/pay/verify usa.
 // Aqui repetimos a leitura pq esse modulo nao depende do server.js.

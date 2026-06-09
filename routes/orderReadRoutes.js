@@ -15,13 +15,9 @@ const express = require('express');
 const axios = require('axios');
 
 const { supaFetch } = require('../lib/supabase');
+const { isUuid: _isUuid, clip: _clip } = require('../lib/validators');
 
 const router = express.Router();
-
-// Helpers locais — duplicados aqui pra evitar fork em refactor parcial.
-// Vao pra lib/validators.js quando F.8.b puxar os mesmos helpers.
-const _isUuid = (s) => /^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$/.test(String(s || ''));
-const _clip = (v, n) => (v == null || v === '' ? null : String(v).slice(0, n));
 
 // GET /api/order/lookup?phone=... — busca pedidos pelo telefone (variantes com/sem 55 e com/sem 9).
 router.get('/api/order/lookup', async (req, res) => {

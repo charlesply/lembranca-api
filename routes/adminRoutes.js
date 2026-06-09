@@ -14,10 +14,9 @@
 const express = require('express');
 const axios = require('axios');
 
-const router = express.Router();
+const { isUuid: _isUuid } = require('../lib/validators');
 
-// Helper local — testa formato UUID (com ou sem hífens).
-const _isUuid = (s) => /^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$/.test(String(s || ''));
+const router = express.Router();
 
 // Middleware de auth — usado em todas as rotas /api/admin/* (não no
 // /api/admin_command pq esse é chamado pelo n8n que tem sua própria
