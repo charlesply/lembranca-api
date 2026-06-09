@@ -78,6 +78,21 @@ router.get('/api/admin/capi_monitor_run', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ Trigger manual do CAPI Token Rotator ═══
+// GET /api/admin/capi_token_rotate_run?secret=XXX[&apply=1]
+// Sem `apply=1`: roda em modo dry-run, so reporta o que faria.
+// Com `apply=1`: rotaciona tokens USER que tem <14d pra expirar via
+// fb_exchange_token. Atualiza process.env.META_CAPI_TOKENS em memoria
+// (precisa atualizar Coolify env manual depois pra persistir restart).
+router.get('/api/admin/capi_token_rotate_run', adminAuth, async (req, res) => {
+  try {
+    const { runOnce } = require('../lib/capiTokenRotator');
+    const apply = req.query.apply === '1' || req.query.apply === 'true';
+    const r = await runOnce({ apply });
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══ Trigger manual do Email Delivery monitor ═══
 router.get('/api/admin/email_delivery_run', adminAuth, async (req, res) => {
   try {
