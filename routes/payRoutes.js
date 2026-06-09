@@ -88,7 +88,7 @@ router.post('/api/pay/create', async (req, res) => {
       payment_amount: cents / 100,
       plan,
     };
-    if (plan === 'completa') patchPay.video_upsell_status = 'pending_photo';
+    if (p.includes_video) patchPay.video_upsell_status = 'pending_photo';
     try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (e) { console.error('[/api/pay/create] patch err:', e.message); }
 
     res.json({
