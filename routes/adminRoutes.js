@@ -11,6 +11,7 @@
 //   GET  /api/admin/capi_monitor_run — varredura manual do CAPI monitor
 //   GET  /api/admin/email_delivery_run — varredura manual do email monitor
 //   GET  /api/admin/email_test       — envia email teste via Resend
+//   GET  /api/admin/suno_credits_check — consulta saldo SunoAPI (e alerta se baixo)
 const express = require('express');
 const axios = require('axios');
 
@@ -141,6 +142,20 @@ router.get('/api/admin/email_test', adminAuth, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.response?.data || e.message });
   }
+});
+
+// ═══ Trigger manual do Suno Credit monitor ═══
+// GET /api/admin/suno_credits_check?secret=XXX[&force=1]
+// - sem force=1: alerta só se cruzou pra baixo do limiar (state machine)
+// - com force=1: dispara o alerta no whats mesmo se estado nao mudou
+//   (útil pra confirmar que o canal de alerta tá funcionando)
+router.get('/api/admin/suno_credits_check', adminAuth, async (req, res) => {
+  try {
+    const { runOnce } = require('../lib/sunoCreditMonitor');
+    const force = req.query.force === '1' || req.query.force === 'true';
+    const r = await runOnce({ force });
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 module.exports = router;

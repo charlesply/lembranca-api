@@ -224,6 +224,14 @@ app.listen(PORT, '0.0.0.0', () => {
     const { startCron: startSunoMonitorCron } = require('./lib/sunoMonitor');
     startSunoMonitorCron();
   } catch (err) { console.error('[sunoMonitor] falha ao iniciar cron (ignorado):', err.message); }
+  // Cron SunoAPI Credit Monitor — checa saldo da SunoAPI a cada 30min e alerta o
+  // WhatsApp pessoal do dono se cair abaixo de 1000 créditos (com hysteresis pra
+  // não floodar). Cobre o caso de créditos zerados quebrando pedidos pagos.
+  // Gated por SUNO_CREDIT_MONITOR_ENABLED=false.
+  try {
+    const { startCron: startSunoCreditMonitorCron } = require('./lib/sunoCreditMonitor');
+    startSunoCreditMonitorCron();
+  } catch (err) { console.error('[sunoCreditMonitor] falha ao iniciar cron (ignorado):', err.message); }
   // Cron Email Delivery Monitor — rede de segurança pra email transacional. Varre orders
   // pagas com email + áudio pronto sem email_delivery_sent. Reenvia em até 10 min.
   // Gated por RESEND_API_KEY existir (senão nem inicia).
