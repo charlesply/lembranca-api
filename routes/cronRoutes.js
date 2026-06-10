@@ -25,13 +25,7 @@ const express = require('express');
 
 const router = express.Router();
 
-// Keep-Warm — renova sessão Suno na tabela (cron Fase 2b)
-router.get('/api/keepwarm_run', async (req, res) => {
-  try {
-    const { runKeepWarmOnce } = require('../lib/keepWarm');
-    res.json(await runKeepWarmOnce('manual'));
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
+// Keep-Warm REMOVIDO em 10/jun/2026 (dependia de Playwright/PlaywrightDriver).
 
 // Upsell de vídeo personalizado
 router.get('/api/upsell_video_run', async (req, res) => {
