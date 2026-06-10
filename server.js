@@ -170,10 +170,18 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   Whisper: ${OPENAI_API_KEY ? '\u2705 habilitado' : '\u274c desabilitado'}`);
   console.log(`   Audio-Edit: ${AUDIO_EDIT_URL_LOCAL}`);
   console.log(`   Webhook n8n: ${N8N_WEBHOOK_URL || '(nao configurado)'}\n`);
-  if (SUNO_COOKIE) {
+  // SunoClient (cookie path) eh APENAS fallback de emergencia. SUNOAPI eh o
+  // path primario agora \u2014 e o keepAlive a cada 30s spamma 429 sem precisar.
+  // Default: NAO inicializa no boot. Os routes /custom_generate, /transcribe etc
+  // ainda chamam getClient() on-demand se precisarem, e a inicializacao acontece
+  // so no primeiro uso.
+  // Pra reativar o keepAlive em background (emergencia): SUNO_COOKIE_KEEPALIVE=true
+  if (SUNO_COOKIE && String(process.env.SUNO_COOKIE_KEEPALIVE).toLowerCase() === 'true') {
     console.log('Tentando inicializar SunoClient em background...');
     getClient().then(() => console.log('\u2705 SunoClient inicializado!'))
       .catch(err => { console.error('\u26a0\ufe0f Falha SunoClient:', err.message); });
+  } else {
+    console.log('[SunoClient] keepAlive em background desabilitado (SUNO_COOKIE_KEEPALIVE!=true). Cookie so sera inicializado on-demand.');
   }
   // Auto re-sync com Inngest Cloud no boot. CR\u00cdTICO: todo deploy/restart dessincroniza o app
   // do Cloud (os eventos param de virar runs \u2192 m\u00fasicas travam em 'generating'). Esse PUT
