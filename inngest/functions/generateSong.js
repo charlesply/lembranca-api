@@ -65,7 +65,10 @@ const SUNO_CONCURRENCY_LIMIT = parseInt(
 const generateSong = inngest.createFunction(
   {
     id: 'generate-song',
-    retries: 3,
+    // 10 retries (default era 3): cobre janela de ~30min com backoff exponencial.
+    // Sobrevive a restart do container (~30s downtime no deploy normal) sem
+    // matar jobs em vôo. Cada step.run individual tambem se beneficia.
+    retries: 10,
     concurrency: [
       { limit: SUNO_CONCURRENCY_LIMIT },           // 10 com API, 2 com cookie
       { limit: 1, key: 'event.data.orderId' },     // 1 job por order (anti-duplicação reforçada)
