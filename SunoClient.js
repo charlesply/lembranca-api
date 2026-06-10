@@ -54,8 +54,12 @@ class SunoClient {
     await this.keepAlive();
     console.log('[SunoClient] ✅ Pronto! SID:', this.sid);
 
-    // Renovar token a cada 30s
-    setInterval(() => this.keepAlive().catch(e => console.error('[keepAlive]', e.message)), 30000);
+    // setInterval 30s desligado por default — sunoapi.org eh o path primario
+    // e o ping ficava spammando 429 a toa. ensureToken() ja refresca on-demand
+    // antes de cada operacao via tokenExpiry. Pra reativar: SUNO_COOKIE_KEEPALIVE=true
+    if (String(process.env.SUNO_COOKIE_KEEPALIVE).toLowerCase() === 'true') {
+      setInterval(() => this.keepAlive().catch(e => console.error('[keepAlive]', e.message)), 30000);
+    }
     return this;
   }
 
