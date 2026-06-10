@@ -107,6 +107,20 @@ const generateSong = inngest.createFunction(
 
     console.log(`[Inngest] 🎬 Iniciando geração para ${d.honoreeName || 'N/A'} (order: ${d.orderId || 'sem'})`);
 
+    // ═══ EARLY-EXIT: status final/cancelled — pula sem chamar GPT/SUNOAPI ═══
+    // CRITICO: protege de drenagem de creditos quando admin cancela em massa
+    // (ex: regenerate em batch acidental). Verificado ANTES de qualquer custo.
+    if (d.orderId) {
+      const cur = await step.run('check-cancelled-early', async () => {
+        const rows = await supaFetch('GET', `orders?id=eq.${d.orderId}&select=status`);
+        return rows?.[0]?.status || null;
+      });
+      if (['cancelled', 'preview_sent', 'paid', 'delivered'].includes(cur)) {
+        console.log(`[Inngest] ⏭️ order=${d.orderId} ja em status=${cur} — early-exit (sem custo SUNOAPI)`);
+        return { ok: true, skipped: true, reason: `status_${cur}` };
+      }
+    }
+
     // ═══ STEP 1: GPT gera letra ═══
     const lyrics = await step.run('gpt-generate-lyrics', async () => {
       if (!hasStory || !OPENAI_API_KEY) {
