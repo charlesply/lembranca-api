@@ -81,7 +81,15 @@ const AUDIO_EDIT_URL_LOCAL = process.env.AUDIO_EDIT_URL || 'http://audio-edit:50
 
 // Health check
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'suno-api-lite', version: '4.0.0', gpt_enabled: !!OPENAI_API_KEY, audio_edit: AUDIO_EDIT_URL_LOCAL, inngest: true });
+  res.json({ status: 'ok', service: 'lembranca-api', version: '4.1.0', gpt_enabled: !!OPENAI_API_KEY, audio_edit: AUDIO_EDIT_URL_LOCAL, inngest: true });
+});
+
+// ═══ /health — endpoint dedicado para health-check do Coolify (rolling deploy) ═══
+// Devolve 200 se o servidor tá responsivo. NÃO depende de Supabase, SUNOAPI ou Inngest
+// (eles podem estar instáveis sem afetar a capacidade do container atender requisições).
+// Coolify usa isso pra decidir quando trocar o tráfego do container velho pro novo.
+app.get('/health', (req, res) => {
+  res.status(200).json({ ok: true, status: 'healthy', uptime_s: Math.round(process.uptime()) });
 });
 
 // 8 rotas Suno proxy + file serves + transcribe extraidas pra routes/sunoRoutes.js na Fase F.5
@@ -191,11 +199,7 @@ app.listen(PORT, '0.0.0.0', () => {
       .then((r) => console.log('[Inngest] \u2705 auto-resync no boot:', (r.data && r.data.message) || r.status))
       .catch((e) => console.error('[Inngest] auto-resync falhou (ignorado):', e.message));
   }, 30000);
-  // Keep-Warm cron (Fase 2a) \u2014 gated por KEEPWARM_ENABLED=true. Aditivo, nao quebra nada.
-  try {
-    const { startKeepWarmCron } = require('./lib/keepWarm');
-    startKeepWarmCron();
-  } catch (err) { console.error('[KeepWarm] falha ao iniciar cron (ignorado):', err.message); }
+  // Keep-Warm cron REMOVIDO em 10/jun/2026 (dependia de Playwright).
   // Retry Cron Inteligente \u2014 gated por RETRY_STUCK_ENABLED=true. Recupera presos sem martelar.
   try {
     const { startRetryStuckCron } = require('./lib/retryStuck');

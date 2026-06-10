@@ -6,12 +6,9 @@
 //   GET  /api/diag                — estado geral do serviço
 //   GET  /api/test-client         — testa init do client do Suno
 //   GET  /api/test-preview        — testa pipeline Audio-Edit com URL
-//   GET  /api/playwright_status   — status do PlaywrightDriver
-//   POST /api/test_playwright     — gera música via Playwright (teste)
-//   POST /api/playwright_shutdown — desliga PlaywrightDriver
-//   GET  /api/keepwarm_test       — renova sessão via browser (debug)
 //   GET  /api/active_cookie       — qual cookie o getClient() usaria
 //   GET  /api/cookie_health       — health check do cookie + créditos
+// (rotas Playwright removidas em 10/jun/2026)
 const express = require('express');
 const { getClient, resetClient, isAuthError } = require('../lib/suno');
 const { createPreviewFromUrl } = require('../lib/audio');
@@ -66,59 +63,11 @@ router.get('/api/test-preview', async (req, res) => {
   }
 });
 
-// ═══ PLAYWRIGHT DRIVER ENDPOINTS ═══
-router.get('/api/playwright_status', async (req, res) => {
-  try {
-    const PlaywrightDriver = require('../PlaywrightDriver');
-    res.json({ ok: true, ...await PlaywrightDriver.status() });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-router.post('/api/test_playwright', async (req, res) => {
-  const t0 = Date.now();
-  try {
-    const PlaywrightDriver = require('../PlaywrightDriver');
-    const { prompt, tags, title, vocal_gender, weirdness, style_weight, lyrics_mode, wait_audio } = req.body || {};
-    if (!prompt && !tags) return res.status(400).json({ ok: false, error: 'prompt ou tags obrigatorio' });
-    const clips = await PlaywrightDriver.customGenerate({
-      prompt, tags, title, model: 'chirp-fenix',
-      vocal_gender, weirdness, style_weight, lyrics_mode,
-      wait_audio: wait_audio !== false,
-    });
-    res.json({ ok: true, elapsed_ms: Date.now() - t0, clips_count: clips.length, clips });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, code: e.code, suno_status: e.response?.status });
-  }
-});
-
-router.post('/api/playwright_shutdown', async (req, res) => {
-  try {
-    const PlaywrightDriver = require('../PlaywrightDriver');
-    await PlaywrightDriver.shutdown();
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// ═══ KEEP-WARM Fase 1 (isolado) — testa renovar a sessao via browser ═══
-// NAO toca na geracao. Retorna se a sessao foi renovada (cookie quente).
-// ?full=1 retorna o cookie completo (pra Fase 2 usar); senao so o diagnostico.
-router.get('/api/keepwarm_test', async (req, res) => {
-  try {
-    const PlaywrightDriver = require('../PlaywrightDriver');
-    const r = await PlaywrightDriver.keepWarm();
-    const out = {
-      ok: true,
-      logged_in: r.logged_in,
-      cookie_length: r.cookie_length,
-      n_keys: r.n_keys,
-      session_exp_in_s: r.session_exp_in_s,
-      client_exp_days: r.client_exp_days,
-      keys: r.keys,
-    };
-    if (req.query.full === '1') out.cookie = r.cookie;
-    res.json(out);
-  } catch (e) { res.status(500).json({ ok: false, error: e.message, code: e.code }); }
-});
+// ═══ PLAYWRIGHT REMOVIDO em 10/jun/2026 ═══
+// Antes existiam rotas /api/playwright_status, /api/test_playwright,
+// /api/playwright_shutdown e /api/keepwarm_test. Foram removidas junto com
+// PlaywrightDriver.js + lib/keepWarm.js — SUNOAPI eh path primario, cookie path
+// HTTP (SunoClient.js) continua funcional como fallback, mas browser nao.
 
 // GET /api/active_cookie — inspeciona qual cookie o getClient() usaria AGORA
 // (warm da tabela vs env), sem alterar nada.
