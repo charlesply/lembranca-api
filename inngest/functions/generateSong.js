@@ -375,6 +375,11 @@ const generateSong = inngest.createFunction(
     const POLL_ATTEMPTS = 51;  // 36 fast + 10 medium + 5 slow
     const PHASE_BOUNDARY_MEDIUM = 36;
     const PHASE_BOUNDARY_SLOW = 46;
+    // Anti-drenagem: a SUNOAPI esta voltando GENERATE_AUDIO_FAILED com "Internal Error"
+    // em ~5-7% das tasks. Em vez de esperar 2h e desistir, detectamos e
+    // re-submetemos UMA vez automatico (max 2 submissoes totais por funcao).
+    let audioRetryCount = 0;
+    const MAX_AUDIO_RETRIES = 1;
 
     for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt++) {
       // Wait progressivo: fast → medium → slow
@@ -408,7 +413,7 @@ const generateSong = inngest.createFunction(
       // Poll: checa status via provider (api ou cookie). Output SLIM normalizado.
       // sunoProvider.getStatus retorna { status, tracks, allDone, anyComplete }
       // — anyComplete já vem mapeado pra evitar passar pelos tracks de novo.
-      const polledClips = await step.run(`poll-clips-${attempt}`, async () => {
+      const pollResult = await step.run(`poll-clips-${attempt}`, async () => {
         const s = await sunoProvider.getStatus({
           provider: submitRef.provider,
           taskId: submitRef.taskId,
@@ -418,8 +423,40 @@ const generateSong = inngest.createFunction(
         const phase = attempt < PHASE_BOUNDARY_MEDIUM ? 'fast'
                     : attempt < PHASE_BOUNDARY_SLOW ? 'medium' : 'slow';
         console.log(`[Inngest] ⏳ Poll ${attempt + 1}/${POLL_ATTEMPTS} (${phase}, via ${submitRef.provider}) [${s.status}]: ${statuses}`);
-        return s.tracks;
+        return { tracks: s.tracks, globalStatus: s.status };
       });
+      const polledClips = pollResult.tracks;
+
+      // ═══ AUTO-RETRY em GENERATE_AUDIO_FAILED ═══
+      // SUNOAPI falha intermitentemente com "Internal Error". Em vez de esperar 2h,
+      // re-submetemos automatico (1x max) e continuamos o polling no taskId novo.
+      if (pollResult.globalStatus === 'FAILED' && submitRef.provider === 'api' && audioRetryCount < MAX_AUDIO_RETRIES) {
+        audioRetryCount++;
+        console.log(`[Inngest] 🔄 SUNOAPI retornou FAILED — auto-resubmit ${audioRetryCount}/${MAX_AUDIO_RETRIES}`);
+        const newSubmit = await step.run(`auto-resubmit-${audioRetryCount}`, async () => {
+          const result = await sunoProvider.submit({
+            prompt: finalPrompt,
+            style: finalStyle,
+            title: finalTitle,
+            instrumental: finalInstrumental,
+            vocalGender,
+            negativeTags: d.negative_tags || undefined,
+            fallbackArgs,
+          });
+          if (d.orderId && result.provider === 'api') {
+            await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
+              suno_task_id: result.taskId,
+              error_message: `[auto-resubmit ${audioRetryCount}] SUNOAPI Internal Error — taskId novo: ${result.taskId.slice(0,12)}`,
+            });
+          }
+          return result;
+        });
+        // Atualiza submitRef pras proximas iteracoes
+        submitRef.taskId = newSubmit.taskId;
+        submitRef.clipIds = newSubmit.clipIds;
+        submitRef.provider = newSubmit.provider;
+        continue;
+      }
 
       // CUIDADO com vacuous truth: array vazio satisfaz .every(...) automaticamente.
       // Em PENDING/GENERATING via sunoapi.org, response.data ainda pode ser []
