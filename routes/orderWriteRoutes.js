@@ -68,6 +68,14 @@ router.post('/api/order', async (req, res) => {
       fbc: _clip(b.fbc, 200),
       client_ip: clientIp,
       client_user_agent: clientUA,
+      // UTM + src tracking (origem da campanha — usado pra atribuir vendas e
+      // pra montar a notificacao WhatsApp + Pushcut no webhook AbacatePay paid).
+      utm_source: _clip(b.utm_source, 100),
+      utm_campaign: _clip(b.utm_campaign, 100),
+      utm_medium: _clip(b.utm_medium, 100),
+      utm_term: _clip(b.utm_term, 100),
+      utm_content: _clip(b.utm_content, 100),
+      src: _clip(b.src, 100),
       status: 'generating', // SEMPRE server-side; cliente nao escolhe
     };
     // Insercao defensiva: se a coluna `customer_email` ainda nao existir no DB

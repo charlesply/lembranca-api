@@ -129,6 +129,9 @@ router.post('/api/webhooks/abacatepay', async (req, res) => {
       console.log('[webhook abacatepay] order', o.id, 'PAID');
       // dispara entrega via brindeVideo cron quando necessario
       try { require('../lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
+      // ═══ NOTIFICACAO DE VENDA — WhatsApp pessoal + Pushcut por valor ═══
+      // Fire-and-forget. Falha aqui nao bloqueia entrega.
+      try { require('../lib/salesNotify').notifySale(o.id); } catch (e) { console.error('[salesNotify] init err:', e.message); }
       // Email transacional de entrega — fire-and-forget. Se falhar aqui, o cron
       // emailDeliveryMonitor pega no proximo tick (a cada 10 min).
       // Carrega dados completos pra o template + lib.
