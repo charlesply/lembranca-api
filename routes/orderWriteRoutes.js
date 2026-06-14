@@ -456,8 +456,11 @@ router.post('/api/order/:id/proof', upload.single('proof'), async (req, res) => 
             { headers: { 'Content-Type': 'application/json' }, timeout: 10000 });
         } catch (e) { console.error('[/api/order/proof] webhook entrega falhou:', e.message); }
       }
-      try { require('../lib/brindeVideo').generateBrindeForOrder(id); } catch (e) { console.error('[/api/order/proof] brinde gen falhou:', e.message); }
-      console.log('[/api/order/proof] ✅ AUTO-APROVADO via IA:', id, '· R$', expectedAmount);
+      // Video so eh gerado pra plano completa (R$29,90). Plano musica (R$19,90) NAO.
+      if (plan === 'completa') {
+        try { require('../lib/brindeVideo').generateBrindeForOrder(id); } catch (e) { console.error('[/api/order/proof] brinde gen falhou:', e.message); }
+      }
+      console.log('[/api/order/proof] ✅ AUTO-APROVADO via IA:', id, 'plan=', plan, '· R$', expectedAmount);
     } else if (proofStatus === 'awaiting_validation') {
       // notifica admin no WhatsApp (Evolution) com link do comprovante e razoes
       try {

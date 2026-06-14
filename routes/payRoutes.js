@@ -141,7 +141,7 @@ router.post('/api/pay/verify', async (req, res) => {
     if (!paid) return res.json({ ok: true, paid: false, detail: chk });
 
     // Idempotente: se ja estava pago, nao reprocessa (evita entrega dupla no reload)
-    const cur = await supaFetch('GET', `orders?id=eq.${orderId}&select=status,paid_at,original_audio_url,full_audio_urls`);
+    const cur = await supaFetch('GET', `orders?id=eq.${orderId}&select=status,paid_at,original_audio_url,full_audio_urls,plan`);
     const o = Array.isArray(cur) && cur[0] ? cur[0] : null;
     const already = o && (o.paid_at || ['paid', 'delivered'].includes((o.status || '').toLowerCase()));
     if (o && !already) {
@@ -164,8 +164,10 @@ router.post('/api/pay/verify', async (req, res) => {
             { headers: { 'Content-Type': 'application/json' }, timeout: 10000 });
         } catch (e) { console.error('[/api/pay/verify] webhook entrega falhou:', e.message); }
       }
-      // GERA o video de brinde no PROPRIO backend (independente do n8n) — fire-and-forget
-      try { require('../lib/brindeVideo').generateBrindeForOrder(orderId); } catch (e) { console.error('[/api/pay/verify] brinde gen falhou:', e.message); }
+      // GERA o video so se plano completa (R$29,90). Plano musica (R$19,90) NAO recebe video.
+      if (o.plan === 'completa') {
+        try { require('../lib/brindeVideo').generateBrindeForOrder(orderId); } catch (e) { console.error('[/api/pay/verify] brinde gen falhou:', e.message); }
+      }
       console.log('[/api/pay/verify] ✅ PAGO + entrega disparada:', orderId);
     }
     res.json({ ok: true, paid: true });

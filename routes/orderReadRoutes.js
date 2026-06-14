@@ -83,7 +83,7 @@ router.get('/api/order/:id/status', async (req, res) => {
   try {
     const id = req.params.id;
     if (!_isUuid(id)) return res.status(400).json({ error: 'id invalido' });
-    const cols = 'status,preview_audio_url,original_audio_url,full_audio_urls,client_contacted_at,error_message,final_lyrics,video_brinde_url,video_upsell_status,honoree_name,customer_name,phone,paid_at';
+    const cols = 'status,preview_audio_url,original_audio_url,full_audio_urls,client_contacted_at,error_message,final_lyrics,video_brinde_url,video_upsell_status,honoree_name,customer_name,phone,paid_at,plan';
     const rows = await supaFetch('GET', `orders?id=eq.${id}&select=${cols}`);
     if (!Array.isArray(rows) || !rows[0]) return res.status(404).json({ error: 'nao encontrado' });
     res.json(rows[0]);

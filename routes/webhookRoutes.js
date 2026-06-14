@@ -117,7 +117,7 @@ router.post('/api/webhooks/abacatepay', async (req, res) => {
       const orderId = metadataOrderId || m?.[1];
       console.log('[webhook abacatepay] parsed orderId:', orderId, '(src:', metadataOrderId ? 'metadata' : (m ? 'externalId' : 'fallback-paymentId'), ') paymentId:', paymentId);
       const filter = orderId ? `id=eq.${orderId}` : `abacate_charge_id=eq.${paymentId}`;
-      const rows = await supaFetch('GET', `orders?${filter}&select=id,status`);
+      const rows = await supaFetch('GET', `orders?${filter}&select=id,status,plan`);
       const o = rows?.[0];
       if (!o) return res.json({ ok: true, found: false });
       if (o.status === 'paid' || o.status === 'delivered') return res.json({ ok: true, already: true });
@@ -126,9 +126,12 @@ router.post('/api/webhooks/abacatepay', async (req, res) => {
         abacate_status: 'PAID',
         paid_at: new Date().toISOString(),
       });
-      console.log('[webhook abacatepay] order', o.id, 'PAID');
-      // dispara entrega via brindeVideo cron quando necessario
-      try { require('../lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
+      console.log('[webhook abacatepay] order', o.id, 'PAID plan=', o.plan);
+      // Video so eh gerado pra plano COMPLETA (R$29,90).
+      // Plano musica (R$19,90) NAO recebe video.
+      if (o.plan === 'completa') {
+        try { require('../lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
+      }
       // ═══ NOTIFICACAO DE VENDA — WhatsApp pessoal + Pushcut por valor ═══
       // Fire-and-forget. Falha aqui nao bloqueia entrega.
       try { require('../lib/salesNotify').notifySale(o.id); } catch (e) { console.error('[salesNotify] init err:', e.message); }

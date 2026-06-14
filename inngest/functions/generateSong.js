@@ -618,18 +618,12 @@ const generateSong = inngest.createFunction(
       });
       console.log(`[Inngest] ✅ preview_sent! order=${d.orderId}`);
 
-      // PRE-GERA o video karaoke COM A CAPA DO SUNO logo apos a musica ficar
-      // pronta. Antes esperava o pagamento (R$29,90) pra so entao gerar -
-      // e o cliente esperava ~3min depois de pagar. Agora ja deixa pronto e
-      // armazenado em video_brinde_url. Quando paga, libera INSTANTANEO.
-      // Fire-and-forget: nunca propaga erro pro Inngest.
-      try {
-        const { generateBrindeForOrder } = require('../../lib/brindeVideo');
-        generateBrindeForOrder(d.orderId, bestClip.image_url || '').catch((e) =>
-          console.error(`[Inngest] pre-gerar video falhou (NAO-FATAL):`, e.message));
-      } catch (e) {
-        console.error(`[Inngest] require brindeVideo falhou (NAO-FATAL):`, e.message);
-      }
+      // VIDEO NAO E PRE-GERADO mais. Antes (10-13/jun) gerava logo apos a musica
+      // pra entregar instantaneo no pagamento — mas isso entupia a fila do
+      // video-api com videos de clientes que nem chegavam a pagar (~80% do
+      // backlog). Agora video so eh disparado quando webhook AbacatePay/payRoutes
+      // confirma pagamento E plan === 'completa' (R$29,90).
+      // Cliente do plano musica (R$19,90) nao recebe video em hipotese nenhuma.
     });
 
     // ═══ STEP 6 (condicional): Webhook N8N — NÃO-BLOQUEANTE + gate Meta-safe ═══
