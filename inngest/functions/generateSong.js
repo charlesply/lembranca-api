@@ -377,8 +377,12 @@ const generateSong = inngest.createFunction(
     const PHASE_BOUNDARY_SLOW = 46;
     // Anti-drenagem: a SUNOAPI esta voltando GENERATE_AUDIO_FAILED com "Internal Error"
     // em ~5-7% das tasks. Em vez de esperar 2h e desistir, detectamos e
-    // re-submetemos UMA vez automatico (max 2 submissoes totais por funcao).
-    let audioRetryCount = 0;
+    // re-submetemos UMA vez automatico (max 2 submissoes totais por order).
+    //
+    // FIX 13/jun/2026: contador agora persistido em audio_retry_count na orders.
+    // Antes era variavel local — toda re-execucao do Inngest function zerava o
+    // contador e re-submetia mais uma vez, desperdiçando ~10 creditos por loop.
+    // Caso Deise/Pedro&Joaquim: ~70 creditos perdidos em ~7 re-execucoes.
     const MAX_AUDIO_RETRIES = 1;
 
     for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt++) {
@@ -427,35 +431,61 @@ const generateSong = inngest.createFunction(
       });
       const polledClips = pollResult.tracks;
 
-      // ═══ AUTO-RETRY em GENERATE_AUDIO_FAILED ═══
+      // ═══ AUTO-RETRY em GENERATE_AUDIO_FAILED (contador persistido) ═══
       // SUNOAPI falha intermitentemente com "Internal Error". Em vez de esperar 2h,
-      // re-submetemos automatico (1x max) e continuamos o polling no taskId novo.
-      if (pollResult.globalStatus === 'FAILED' && submitRef.provider === 'api' && audioRetryCount < MAX_AUDIO_RETRIES) {
-        audioRetryCount++;
-        console.log(`[Inngest] 🔄 SUNOAPI retornou FAILED — auto-resubmit ${audioRetryCount}/${MAX_AUDIO_RETRIES}`);
-        const newSubmit = await step.run(`auto-resubmit-${audioRetryCount}`, async () => {
-          const result = await sunoProvider.submit({
-            prompt: finalPrompt,
-            style: finalStyle,
-            title: finalTitle,
-            instrumental: finalInstrumental,
-            vocalGender,
-            negativeTags: d.negative_tags || undefined,
-            fallbackArgs,
-          });
-          if (d.orderId && result.provider === 'api') {
+      // re-submetemos automatico (max MAX_AUDIO_RETRIES vezes) e continuamos o
+      // polling no taskId novo. Contador no DB pra durar entre re-execucoes do
+      // Inngest function (cada re-execucao zerava o contador local antes).
+      if (pollResult.globalStatus === 'FAILED' && submitRef.provider === 'api') {
+        const retryCheck = await step.run(`audio-retry-check-${attempt}`, async () => {
+          if (!d.orderId) return { allowed: false, exhausted: false, current: 0 };
+          const rows = await supaFetch('GET', `orders?id=eq.${d.orderId}&select=audio_retry_count`);
+          const current = (Array.isArray(rows) && rows[0] && rows[0].audio_retry_count) || 0;
+          if (current >= MAX_AUDIO_RETRIES) {
+            // Esgotado — marca como failed e sai do loop.
             await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
-              suno_task_id: result.taskId,
-              error_message: `[auto-resubmit ${audioRetryCount}] SUNOAPI Internal Error — taskId novo: ${result.taskId.slice(0,12)}`,
+              status: 'generation_failed',
+              error_message: `[generation_failed] SUNOAPI FAILED apos ${current + 1} tentativas — intervencao manual necessaria (/api/regenerate)`,
             });
+            return { allowed: false, exhausted: true, current };
           }
-          return result;
+          // Incrementa ANTES de submeter pra evitar duplicacao em re-execucao.
+          await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
+            audio_retry_count: current + 1,
+          });
+          return { allowed: true, exhausted: false, current: current + 1 };
         });
-        // Atualiza submitRef pras proximas iteracoes
-        submitRef.taskId = newSubmit.taskId;
-        submitRef.clipIds = newSubmit.clipIds;
-        submitRef.provider = newSubmit.provider;
-        continue;
+
+        if (retryCheck.exhausted) {
+          console.log(`[Inngest] ❌ Auto-resubmit esgotado p/ order ${d.orderId} — parando (${retryCheck.current}/${MAX_AUDIO_RETRIES})`);
+          throw new NonRetriableError(`SUNOAPI FAILED esgotado apos ${MAX_AUDIO_RETRIES + 1} tentativas — order marcada generation_failed`);
+        }
+
+        if (retryCheck.allowed) {
+          console.log(`[Inngest] 🔄 SUNOAPI retornou FAILED — auto-resubmit ${retryCheck.current}/${MAX_AUDIO_RETRIES}`);
+          const newSubmit = await step.run(`auto-resubmit-${retryCheck.current}`, async () => {
+            const result = await sunoProvider.submit({
+              prompt: finalPrompt,
+              style: finalStyle,
+              title: finalTitle,
+              instrumental: finalInstrumental,
+              vocalGender,
+              negativeTags: d.negative_tags || undefined,
+              fallbackArgs,
+            });
+            if (d.orderId && result.provider === 'api') {
+              await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
+                suno_task_id: result.taskId,
+                error_message: `[auto-resubmit ${retryCheck.current}] SUNOAPI Internal Error — taskId novo: ${result.taskId.slice(0,12)}`,
+              });
+            }
+            return result;
+          });
+          submitRef.taskId = newSubmit.taskId;
+          submitRef.clipIds = newSubmit.clipIds;
+          submitRef.provider = newSubmit.provider;
+          continue;
+        }
       }
 
       // CUIDADO com vacuous truth: array vazio satisfaz .every(...) automaticamente.
