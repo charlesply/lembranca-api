@@ -175,4 +175,79 @@ router.post('/api/webhooks/abacatepay', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// WEBHOOK Resend — atualiza promo_campaigns com eventos de email.
+//
+// Eventos esperados (configurados no painel Resend):
+//   email.delivered  → email_delivered_at
+//   email.opened     → email_opened_at (uma vez por destinatario; ignoramos repeated)
+//   email.clicked    → link_clicked_at (coluna ja existia)
+//   email.bounced    → email_bounced_at + email_error
+//   email.complained → email_complained_at (red flag: marcou como spam)
+//
+// Match: cada envio gravou o resend email_id em promo_campaigns.email_status.
+// O payload do Resend traz {data.email_id} — buscamos pela coluna email_status.
+//
+// Idempotente: usa COALESCE no PATCH pra so gravar timestamp se ainda for null.
+// Segurança: Resend assina os webhooks com svix-signature; pra simplificar o
+// MVP, validamos só presença do email_id + tipo de evento esperado. Se quiser
+// hardening, adicionar verificação svix com RESEND_WEBHOOK_SECRET depois.
+// ═══════════════════════════════════════════════════════════════
+router.post('/api/webhooks/resend', async (req, res) => {
+  try {
+    const evt = req.body || {};
+    const type = evt.type;
+    const emailId = evt.data?.email_id;
+    const at = evt.created_at ? new Date(evt.created_at).toISOString() : new Date().toISOString();
+
+    if (!type || !emailId) {
+      return res.status(200).json({ ok: false, skipped: 'missing_fields' });
+    }
+
+    // Mapeia tipo de evento -> coluna a atualizar
+    const TYPE_TO_COLUMN = {
+      'email.delivered':  'email_delivered_at',
+      'email.opened':     'email_opened_at',
+      'email.clicked':    'link_clicked_at',
+      'email.bounced':    'email_bounced_at',
+      'email.complained': 'email_complained_at',
+    };
+    const col = TYPE_TO_COLUMN[type];
+    if (!col) {
+      console.log('[webhook resend] tipo ignorado:', type);
+      return res.json({ ok: true, ignored: type });
+    }
+
+    // Acha o registro de envio pelo email_id (gravado em email_status)
+    const rows = await supaFetch('GET',
+      `promo_campaigns?email_status=eq.${encodeURIComponent(emailId)}&select=id,${col}`);
+    if (!Array.isArray(rows) || rows.length === 0) {
+      console.log('[webhook resend] sem match pra email_id:', emailId, 'type:', type);
+      return res.json({ ok: true, no_match: true });
+    }
+
+    const row = rows[0];
+    // Idempotente: nao sobrescreve se ja tem timestamp
+    if (row[col]) {
+      return res.json({ ok: true, already: true });
+    }
+
+    const patch = { [col]: at };
+    // Pra bounced/complained, grava motivo tb em email_error
+    if (type === 'email.bounced' && evt.data?.bounce?.message) {
+      patch.email_error = String(evt.data.bounce.message).slice(0, 500);
+    }
+    if (type === 'email.complained') {
+      patch.email_error = 'spam_complaint';
+    }
+
+    await supaFetch('PATCH', `promo_campaigns?id=eq.${row.id}`, patch);
+    console.log('[webhook resend]', type, '→', col, 'order_id_row=', row.id);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[webhook resend] erro:', e.message);
+    res.status(500).json({ error: 'erro interno' });
+  }
+});
+
 module.exports = router;
