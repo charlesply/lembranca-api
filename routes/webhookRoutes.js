@@ -127,9 +127,10 @@ router.post('/api/webhooks/abacatepay', async (req, res) => {
         paid_at: new Date().toISOString(),
       });
       console.log('[webhook abacatepay] order', o.id, 'PAID plan=', o.plan);
-      // Video so eh gerado pra plano COMPLETA (R$29,90).
-      // Plano musica (R$19,90) NAO recebe video.
-      if (o.plan === 'completa') {
+      // Video eh gerado pra QUALQUER plano com includes_video=true
+      // (completa, promo_namorados_2026, promo_recovery_jun26, video_letra).
+      // Plano musica puro (R$19,90 sem promo) NAO recebe video.
+      if (require('../lib/payPlans').isVideoPlan(o.plan)) {
         try { require('../lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
       }
       // ═══ NOTIFICACAO DE VENDA — WhatsApp pessoal + Pushcut por valor ═══

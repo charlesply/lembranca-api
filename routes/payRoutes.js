@@ -164,8 +164,8 @@ router.post('/api/pay/verify', async (req, res) => {
             { headers: { 'Content-Type': 'application/json' }, timeout: 10000 });
         } catch (e) { console.error('[/api/pay/verify] webhook entrega falhou:', e.message); }
       }
-      // GERA o video so se plano completa (R$29,90). Plano musica (R$19,90) NAO recebe video.
-      if (o.plan === 'completa') {
+      // Video pra qualquer plano com includes_video=true (completa, promo_*).
+      if (require('../lib/payPlans').isVideoPlan(o.plan)) {
         try { require('../lib/brindeVideo').generateBrindeForOrder(orderId); } catch (e) { console.error('[/api/pay/verify] brinde gen falhou:', e.message); }
       }
       console.log('[/api/pay/verify] ✅ PAGO + entrega disparada:', orderId);
