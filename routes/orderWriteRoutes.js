@@ -40,7 +40,10 @@ router.post('/api/order', async (req, res) => {
     const phone = (b.phone || '').toString().replace(/\D/g, '').slice(0, 15) || null;
 
     // Captura IP + User-Agent do request — usados pelo Meta CAPI pra match quality.
-    const ipRaw = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '';
+    // cf-connecting-ip é o IP REAL do cliente quando atrás de Cloudflare (sempre
+    // populado pelo CF edge). x-forwarded-for pode trazer IP do edge node em vez
+    // do cliente, causando "multiple users per IP" e IPv4/IPv6 mismatch no CAPI.
+    const ipRaw = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || '';
     const clientIp = String(ipRaw).split(',')[0].trim() || null;
     const clientUA = (req.headers['user-agent'] || '').toString().slice(0, 500) || null;
 
@@ -464,9 +467,9 @@ router.post('/api/order/:id/proof', upload.single('proof'), async (req, res) => 
     } else if (proofStatus === 'awaiting_validation') {
       // notifica admin no WhatsApp (Evolution) com link do comprovante e razoes
       try {
-        const EVO_URL = process.env.EVO_URL || 'https://evolutiontechv2.linkarbox.app';
+        const EVO_URL = process.env.EVO_URL || 'https://evolution.bvph.uk';
         const EVO_KEY = process.env.EVO_KEY || '';
-        const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno_teste';
+        const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno';
         const ADMIN_PHONE = process.env.ADMIN_PHONE || '5511920188319';
         const id8 = id.slice(0, 8);
         const msg = [
