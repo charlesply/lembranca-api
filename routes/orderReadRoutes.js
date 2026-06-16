@@ -134,9 +134,9 @@ router.post('/api/order/:id/help_request', async (req, res) => {
 
     // Avisa o admin no WhatsApp via Evolution (mesmo canal usado nos comprovantes)
     try {
-      const EVO_URL = process.env.EVO_URL || 'https://evolutiontechv2.linkarbox.app';
+      const EVO_URL = process.env.EVO_URL || 'https://evolution.bvph.uk';
       const EVO_KEY = process.env.EVO_KEY || '';
-      const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno_teste';
+      const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno';
       const ADMIN_PHONE = process.env.ADMIN_PHONE || '5511920188319';
       if (EVO_KEY) {
         const id8 = id.slice(0, 8);

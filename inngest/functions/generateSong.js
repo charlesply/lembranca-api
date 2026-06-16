@@ -308,9 +308,9 @@ const generateSong = inngest.createFunction(
         await step.run('alert-admin-cookie-stop', async () => {
           try {
             const ADMIN_PHONE = process.env.ADMIN_PHONE || '5511920188319';
-            const EVO_URL = process.env.EVO_URL || 'https://evolutiontechv2.linkarbox.app';
-            const EVO_KEY = process.env.EVO_KEY || 'klRvAffSJYcPDPYCFIMQXRrcBqNztk';
-            const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno_teste';
+            const EVO_URL = process.env.EVO_URL || 'https://evolution.bvph.uk';
+            const EVO_KEY = process.env.EVO_KEY || '';
+            const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno';
             const SUPA = process.env.SUPABASE_URL || 'https://wedkbwsijfikbkaqnugz.supabase.co/rest/v1';
             const SKEY = process.env.SUPABASE_KEY || '';
             const prev = await supaFetch('GET', `system_control?key=eq.cookie_alert_last&select=value`);
@@ -514,9 +514,9 @@ const generateSong = inngest.createFunction(
             const nowMs = Date.now();
             if (nowMs - lastMs < 20 * 60 * 1000) { console.log('[Inngest] alerta outage já enviado <20min — dedup'); return; }
             const ADMIN_PHONE = process.env.ADMIN_PHONE || '5511920188319';
-            const EVO_URL = process.env.EVO_URL || 'https://evolutiontechv2.linkarbox.app';
-            const EVO_KEY = process.env.EVO_KEY || 'klRvAffSJYcPDPYCFIMQXRrcBqNztk';
-            const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno_teste';
+            const EVO_URL = process.env.EVO_URL || 'https://evolution.bvph.uk';
+            const EVO_KEY = process.env.EVO_KEY || '';
+            const EVO_INSTANCE = process.env.EVO_INSTANCE || 'app_suno';
             const msg = '🔴 *SUNO FORA DO AR?*\n\n' +
               'As músicas estão presas em "submitted" há vários minutos — o Suno aceitou mas *não está processando*. Provável instabilidade do Suno (não é o nosso sistema).\n\n' +
               '✅ Os pedidos *auto-recuperam* sozinhos quando o Suno voltar (em até ~2h). Se demorar muito, me manda *TRAVADOS* depois que o Suno voltar que eu re-disparo os que falharem.';
