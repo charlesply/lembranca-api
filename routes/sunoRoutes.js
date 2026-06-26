@@ -32,12 +32,24 @@ router.get('/api/preview/:filename', async (req, res) => {
   // AUTO-CURA: o disco e efemero (redeploy apaga). Se o arquivo sumiu, regenera da fonte (Suno CDN).
   if (!fs.existsSync(filePath)) {
     try {
-      const rows = await supaFetch('GET', `orders?status=eq.preview_sent&original_audio_url=not.is.null&select=id,original_audio_url,preview_audio_url&order=created_at.desc&limit=120`);
+      // Busca o pedido DONO desta prévia pela URL — SEM janela de 120.
+      // (Antes só olhava os 120 mais recentes → prévias antigas davam 404.)
+      const rows = await supaFetch('GET', `orders?preview_audio_url=like.*${encodeURIComponent(filename)}&select=id,original_audio_url,full_audio_urls,preview_audio_url&limit=5`);
       const o = (Array.isArray(rows) ? rows : []).find(r => (r.preview_audio_url || '').endsWith(filename));
-      if (o && o.original_audio_url) {
+      // Fonte do áudio: original_audio_url; fallback pro 1º full_audio_urls.
+      let src = o && o.original_audio_url;
+      if (o && !src && o.full_audio_urls) {
+        try {
+          const arr = typeof o.full_audio_urls === 'string'
+            ? JSON.parse(o.full_audio_urls.replace(/'/g, '"'))
+            : o.full_audio_urls;
+          if (Array.isArray(arr) && arr[0]) src = arr[0];
+        } catch (_) {}
+      }
+      if (o && src) {
         const title = decodeURIComponent(filename).replace(/_preview\.mp3$/i, '').replace(/_/g, ' ');
         console.log(`[Preview self-heal] regenerando ${filename} (order ${o.id})`);
-        await createPreviewFromUrl(o.original_audio_url, o.id, title);
+        await createPreviewFromUrl(src, o.id, title);
       }
     } catch (e) { console.error('[Preview self-heal] falhou:', e.message); }
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Preview nao encontrado.' });
