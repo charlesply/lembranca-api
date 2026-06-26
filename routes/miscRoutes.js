@@ -151,6 +151,7 @@ router.post('/api/regenerate', async (req, res) => {
         story: order.story || '',
         honoreeName: order.honoree_name,
         relationship: order.relationship || '',
+        occasion: order.occasion || '',
         genre: _genre,
         mood: _mood,
         voice: _voice,
