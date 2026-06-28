@@ -35,7 +35,12 @@ router.get('/api/preview/:filename', async (req, res) => {
     try {
       // Busca o pedido DONO desta prévia pela URL — SEM janela de 120.
       // (Antes só olhava os 120 mais recentes → prévias antigas davam 404.)
-      const rows = await supaFetch('GET', `orders?preview_audio_url=like.*${encodeURIComponent(filename)}&select=id,original_audio_url,full_audio_urls,preview_audio_url&limit=5`);
+      // %->%25: o filename codificado tem % (acento → %C3%AD). Sem escapar, o transporte
+      // HTTP decodifica de volta pro acento antes do PostgREST → o LIKE procura "Lavínia"
+      // literal, mas a preview_audio_url salva guarda "%C3%AD" literal → 0 rows. Escapando
+      // o % (→ %25) o PostgREST recebe o % literal (vira wildcard) e ACHA o pedido.
+      const _enc = encodeURIComponent(filename).replace(/%/g, '%25');
+      const rows = await supaFetch('GET', `orders?preview_audio_url=like.*${_enc}&select=id,original_audio_url,full_audio_urls,preview_audio_url&limit=5`);
       _dbg.rows = Array.isArray(rows) ? rows.length : -1;
       // FIX: a preview_audio_url salva é URL-ENCODED (acento → %C3%AD), mas req.params.filename
       // vem DECODIFICADO pelo Express → endsWith(filename) NUNCA casava em nome com acento
