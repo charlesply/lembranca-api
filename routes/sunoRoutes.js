@@ -31,10 +31,12 @@ router.get('/api/preview/:filename', async (req, res) => {
   const filePath = path.join(PREVIEW_DIR, filename);
   // AUTO-CURA: o disco e efemero (redeploy apaga). Se o arquivo sumiu, regenera da fonte (Suno CDN).
   if (!fs.existsSync(filePath)) {
+    const _dbg = { _v: 'dbg1', rows: 0, foundOrder: false, src: null, err: null };
     try {
       // Busca o pedido DONO desta prévia pela URL — SEM janela de 120.
       // (Antes só olhava os 120 mais recentes → prévias antigas davam 404.)
       const rows = await supaFetch('GET', `orders?preview_audio_url=like.*${encodeURIComponent(filename)}&select=id,original_audio_url,full_audio_urls,preview_audio_url&limit=5`);
+      _dbg.rows = Array.isArray(rows) ? rows.length : -1;
       // FIX: a preview_audio_url salva é URL-ENCODED (acento → %C3%AD), mas req.params.filename
       // vem DECODIFICADO pelo Express → endsWith(filename) NUNCA casava em nome com acento
       // (Lavínia, Lúcia, Cecília...) → o=undefined → não regenerava → 404. Compara nas 2 formas.
@@ -42,6 +44,7 @@ router.get('/api/preview/:filename', async (req, res) => {
         const u = String(r.preview_audio_url || '');
         return u.endsWith(filename) || u.endsWith(encodeURIComponent(filename)) || decodeURIComponent(u).endsWith(filename);
       });
+      _dbg.foundOrder = !!o;
       // Fonte do áudio: original_audio_url; fallback pro 1º full_audio_urls.
       let src = o && o.original_audio_url;
       if (o && !src && o.full_audio_urls) {
@@ -52,13 +55,14 @@ router.get('/api/preview/:filename', async (req, res) => {
           if (Array.isArray(arr) && arr[0]) src = arr[0];
         } catch (_) {}
       }
+      _dbg.src = src ? String(src).slice(0, 45) : null;
       if (o && src) {
         const title = decodeURIComponent(filename).replace(/_preview\.mp3$/i, '').replace(/_/g, ' ');
         console.log(`[Preview self-heal] regenerando ${filename} (order ${o.id})`);
         await createPreviewFromUrl(src, o.id, title);
       }
-    } catch (e) { console.error('[Preview self-heal] falhou:', e.message); }
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Preview nao encontrado.' });
+    } catch (e) { _dbg.err = e.message; console.error('[Preview self-heal] falhou:', e.message); }
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Preview nao encontrado.', _dbg });
   }
   res.setHeader('Content-Type', 'audio/mpeg');
   res.setHeader('Content-Disposition', `inline; filename="${decodeURIComponent(filename)}"`);
