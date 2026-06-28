@@ -35,7 +35,13 @@ router.get('/api/preview/:filename', async (req, res) => {
       // Busca o pedido DONO desta prévia pela URL — SEM janela de 120.
       // (Antes só olhava os 120 mais recentes → prévias antigas davam 404.)
       const rows = await supaFetch('GET', `orders?preview_audio_url=like.*${encodeURIComponent(filename)}&select=id,original_audio_url,full_audio_urls,preview_audio_url&limit=5`);
-      const o = (Array.isArray(rows) ? rows : []).find(r => (r.preview_audio_url || '').endsWith(filename));
+      // FIX: a preview_audio_url salva é URL-ENCODED (acento → %C3%AD), mas req.params.filename
+      // vem DECODIFICADO pelo Express → endsWith(filename) NUNCA casava em nome com acento
+      // (Lavínia, Lúcia, Cecília...) → o=undefined → não regenerava → 404. Compara nas 2 formas.
+      const o = (Array.isArray(rows) ? rows : []).find(r => {
+        const u = String(r.preview_audio_url || '');
+        return u.endsWith(filename) || u.endsWith(encodeURIComponent(filename)) || decodeURIComponent(u).endsWith(filename);
+      });
       // Fonte do áudio: original_audio_url; fallback pro 1º full_audio_urls.
       let src = o && o.original_audio_url;
       if (o && !src && o.full_audio_urls) {
