@@ -25,6 +25,25 @@ router.get('/api/order/lookup', async (req, res) => {
   try {
     const cols = 'id,status,honoree_name,customer_name,phone,preview_audio_url,original_audio_url,full_audio_urls,video_brinde_url,paid_at,created_at,prev_audio_urls,self_edit_used,edit_status';
 
+    // ── Busca por NÚMERO DO PEDIDO (#XXXXXXXX curto ou UUID completo) ──
+    const orderQ = (req.query.order || '').toString().replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+    if (orderQ) {
+      let rows = [];
+      if (orderQ.length >= 32) {
+        // UUID completo (com ou sem hifens) → normaliza e busca exato.
+        const h = orderQ.slice(0, 32);
+        const uuid = `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+        rows = await supaFetch('GET', `orders?id=eq.${uuid}&select=${cols}&limit=1`);
+      } else if (orderQ.length >= 6) {
+        // Prefixo curto (os 8 primeiros hex do UUID) → range no id.
+        const p = orderQ.slice(0, 8).padEnd(8, '0');
+        const lo = `${p}-0000-0000-0000-000000000000`;
+        const hi = `${p}-ffff-ffff-ffff-ffffffffffff`;
+        rows = await supaFetch('GET', `orders?id=gte.${lo}&id=lte.${hi}&select=${cols}&order=created_at.desc&limit=5`);
+      }
+      return res.json({ ok: true, orders: Array.isArray(rows) ? rows : [] });
+    }
+
     // ── Busca por E-MAIL ──
     const email = (req.query.email || '').toString().trim().toLowerCase();
     if (email) {
