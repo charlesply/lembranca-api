@@ -21,6 +21,7 @@ const router = express.Router();
 const { supaFetch } = require('../lib/supabase');
 const { isUuid: _isUuid, clip: _clip } = require('../lib/validators');
 const { generateLyricsWithGPT, editLyricsWithGPT } = require('../lib/openai');
+const { clipCdnUrl } = require('../lib/sunoApi');
 const { inngest } = require('../inngest/client');
 
 const MAX_LYRIC_GENS = 3;
@@ -78,7 +79,7 @@ router.post('/api/order/:id/edit/confirm', async (req, res) => {
   try {
     const id = req.params.id;
     if (!_isUuid(id)) return res.status(400).json({ error: 'id invalido' });
-    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=id,paid_at,self_edit_used,full_audio_urls,original_audio_url,prev_audio_urls`);
+    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=id,paid_at,self_edit_used,full_audio_urls,original_audio_url,prev_audio_urls,suno_clip_ids`);
     const o = Array.isArray(rows) && rows[0];
     if (!o) return res.status(404).json({ error: 'nao encontrado' });
     if (!o.paid_at) return res.status(403).json({ error: 'not_paid' });
@@ -88,10 +89,16 @@ router.post('/api/order/:id/edit/confirm', async (req, res) => {
     if (!lyrics.trim()) return res.status(400).json({ error: 'sem letra' });
     const fields = (req.body && typeof req.body.fields === 'object') ? req.body.fields : {};
 
-    // Snapshot das versões ATUAIS → prev_audio_urls (só se ainda não tiver).
-    const curVersions = (Array.isArray(o.full_audio_urls) && o.full_audio_urls.filter(Boolean).length)
-      ? o.full_audio_urls.filter(Boolean)
-      : (o.original_audio_url ? [o.original_audio_url] : []);
+    // Snapshot das versões ATUAIS → prev_audio_urls. Preferimos montar do
+    // suno_clip_ids como link PERMANENTE (cdn1) — assim as originais NÃO expiram
+    // no painel (o full_audio_urls pode ser um tempfile antigo já morto). Fallback
+    // pro full_audio_urls/original só se não tiver clip id.
+    const clipIds = Array.isArray(o.suno_clip_ids) ? o.suno_clip_ids.filter(Boolean) : [];
+    const curVersions = clipIds.length
+      ? clipIds.map(clipCdnUrl).filter(Boolean)
+      : ((Array.isArray(o.full_audio_urls) && o.full_audio_urls.filter(Boolean).length)
+          ? o.full_audio_urls.filter(Boolean)
+          : (o.original_audio_url ? [o.original_audio_url] : []));
     const prev = (Array.isArray(o.prev_audio_urls) && o.prev_audio_urls.length) ? o.prev_audio_urls : curVersions;
 
     const patch = {

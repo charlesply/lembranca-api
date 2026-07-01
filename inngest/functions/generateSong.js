@@ -8,6 +8,7 @@ const { getClient, resetClient } = require('../../lib/suno');
 // cai pro cookie (SunoClient) em erros recuperáveis. Veja lib/sunoProvider.js
 // pra política completa (env SUNO_PROVIDER: api | cookie | auto).
 const sunoProvider = require('../../lib/sunoProvider');
+const { clipCdnUrl } = require('../../lib/sunoApi');
 const axios = require('axios');
 
 // ═══ N8N como hub central de notificações ═══
@@ -570,14 +571,18 @@ const generateSong = inngest.createFunction(
     // Salvar audio original no Supabase
     if (d.orderId) {
       await step.run('save-original', async () => {
+        // Guarda o link PERMANENTE (cdn1.suno.ai/{id}.mp3) — o audio_url da API é
+        // tempfile temporário e expira em ~2 semanas. Fallback pro audio_url só se
+        // faltar o id do clipe. Ver lib/sunoApi.clipCdnUrl.
+        const fulls = completedClips.map(c => clipCdnUrl(c.id) || c.audio_url).filter(Boolean);
         await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
           status: 'generating',
-          original_audio_url: bestClip.audio_url,
+          original_audio_url: clipCdnUrl(bestClip.id) || bestClip.audio_url,
           suno_clip_ids: completedClips.map(c => c.id),
-          full_audio_urls: completedClips.map(c => c.audio_url).filter(Boolean),
+          full_audio_urls: fulls,
           final_lyrics: lyrics || null,
         });
-        console.log(`[Inngest] ✅ Original salvo: ${bestClip.audio_url.substring(0, 60)}...`);
+        console.log(`[Inngest] ✅ Original salvo (cdn1): ${(fulls[0] || '').substring(0, 60)}...`);
       });
     }
 

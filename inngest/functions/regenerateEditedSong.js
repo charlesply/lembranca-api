@@ -18,6 +18,7 @@ const { inngest } = require('../client');
 const { NonRetriableError } = require('inngest');
 const { supaFetch } = require('../../lib/supabase');
 const sunoProvider = require('../../lib/sunoProvider');
+const { clipCdnUrl } = require('../../lib/sunoApi');
 const { sendEditReadyEmail } = require('../../lib/emailDelivery');
 
 // Planos que incluem vídeo (completa + promos c/ vídeo). Fonte única: payPlans.
@@ -127,15 +128,15 @@ const regenerateEditedSong = inngest.createFunction(
     // ═══ STEP 4: grava as versões NOVAS (mantém as antigas em prev_audio_urls) ═══
     const isVideoPlan = VIDEO_PLAN_KEYS.includes(info.plan);
     await step.run('save-new-versions', async () => {
+      // Link PERMANENTE (cdn1) — nunca expira. Ver lib/sunoApi.clipCdnUrl.
       const patch = {
-        original_audio_url: best.audio_url,
-        full_audio_urls: completed.map(c => c.audio_url).filter(Boolean),
+        original_audio_url: clipCdnUrl(best.id) || best.audio_url,
+        full_audio_urls: completed.map(c => clipCdnUrl(c.id) || c.audio_url).filter(Boolean),
         suno_clip_ids: completed.map(c => c.id),
         edit_status: 'done',
         error_message: null,
       };
-      // Plano com vídeo: limpa o vídeo antigo → cron brindeVideo regenera do novo
-      // áudio + nova letra (usa original_audio_url + final_lyrics, já atualizados).
+      // Plano com vídeo: limpa o vídeo antigo (será regenerado do novo áudio+letra).
       if (isVideoPlan) {
         patch.video_brinde_url = null;
         patch.video_brinde_job_id = null;
@@ -144,6 +145,21 @@ const regenerateEditedSong = inngest.createFunction(
       await supaFetch('PATCH', `orders?id=eq.${orderId}`, patch);
       console.log(`[EditRegen] ✅ novas versões salvas order=${orderId} (${patch.full_audio_urls.length} clips)${isVideoPlan ? ' + vídeo p/ regenerar' : ''}`);
     });
+
+    // ═══ STEP 4b: dispara o vídeo DIRETO (não depende do cron) ═══
+    // O cron brindeVideo prioriza paid_at recente (limit 4) → pedidos antigos
+    // que fizeram self-edit ficavam na fila e o vídeo nunca saía. Aqui chamamos
+    // a geração direto (fire-and-forget); ela persiste o job_id cedo, então se o
+    // processo cair o cron (passo pendingJobs, sem starvation) retoma.
+    if (isVideoPlan) {
+      await step.run('kick-video', async () => {
+        try {
+          const { generateBrindeForOrder } = require('../../lib/brindeVideo');
+          generateBrindeForOrder(orderId).catch(e => console.error('[EditRegen] kick-video err', e.message));
+        } catch (e) { console.error('[EditRegen] kick-video require err', e.message); }
+        return { kicked: true };
+      });
+    }
 
     // ═══ STEP 5: e-mail "nova música pronta" ═══
     await step.run('email-edit-ready', async () => {
