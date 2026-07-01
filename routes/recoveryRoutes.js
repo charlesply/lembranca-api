@@ -39,9 +39,10 @@ router.post('/unsub/:id', async (req, res) => {
   res.status(200).json({ ok: true });
 });
 
-// GET /api/recovery/test?to=email&order=uuid[&v=A] — envia UM e-mail de teste
-// (não marca recovery_email_sent). Usa os dados do pedido informado.
-router.get('/api/recovery/test', async (req, res) => {
+// GET /api/recovery/email_test?to=email&order=uuid[&v=A] — envia UM e-mail de
+// teste (não marca recovery_email_sent). Nome distinto do /api/recovery/test do
+// funil de WhatsApp (cronRoutes) pra não colidir.
+router.get('/api/recovery/email_test', async (req, res) => {
   try {
     const to = String(req.query.to || '').trim();
     const orderId = String(req.query.order || '').trim();
