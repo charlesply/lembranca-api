@@ -1,0 +1,23 @@
+(tick 1/30) aguardando 2 restante(s)...
+(tick 2/30) aguardando 2 restante(s)...
+(tick 3/30) aguardando 2 restante(s)...
+(tick 4/30) aguardando 2 restante(s)...
+(tick 5/30) aguardando 2 restante(s)...
+✅ Edijenaldo → Helen: 2 URL(s) | video=não
+(tick 6/30) aguardando 1 restante(s)...
+✅ Edijenaldo → Helen: 2 URL(s) | video=não
+✅ Claudia → filhos: 2 URL(s) | video=não
+
+═══ Estado final ═══
+Edijenaldo → Helen:
+  task: afabd35b92ea7fe53f097935edc78129
+  v1  : https://tempfile.aiquickdraw.com/r/1ffa4aa562634aeb89af43ae9e2151da.mp3
+  v2  : https://tempfile.aiquickdraw.com/r/8b09642e7bdb4fb28b61b3018224da0d.mp3
+  video: NULL
+
+Claudia → filhos:
+  task: 971ba366a235d64bcd421a5982c48286
+  v1  : https://tempfile.aiquickdraw.com/r/d537a3b8dbff49728232fd0dbf779e25.mp3
+  v2  : https://tempfile.aiquickdraw.com/r/d589e1e4411847b8a155d50b22cbe900.mp3
+  video: NULL
+
