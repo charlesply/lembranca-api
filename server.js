@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const { serve } = require('inngest/express');
 const { inngest } = require('./inngest/client');
 const { generateSong } = require('./inngest/functions/generateSong');
+const { regenerateEditedSong } = require('./inngest/functions/regenerateEditedSong');
 
 // ═══ Helpers compartilhados (lib/) — evita dependência circular ═══
 const { supaFetch } = require('./lib/supabase');
@@ -29,6 +30,7 @@ const webhookRoutes = require('./routes/webhookRoutes');
 const payRoutes = require('./routes/payRoutes');
 const orderReadRoutes = require('./routes/orderReadRoutes');
 const orderWriteRoutes = require('./routes/orderWriteRoutes');
+const orderEditRoutes = require('./routes/orderEditRoutes');
 const promoRoutes = require('./routes/promoRoutes');
 
 // Multer config: aceita audio ate 25MB (limite do Whisper)
@@ -54,6 +56,7 @@ app.use(webhookRoutes);
 app.use(payRoutes);
 app.use(orderReadRoutes);
 app.use(orderWriteRoutes);
+app.use(orderEditRoutes);
 app.use(promoRoutes);
 
 const PORT = process.env.PORT || 3000;
@@ -165,7 +168,7 @@ app.get('/health', (req, res) => {
 // ═══ Inngest handler — recebe webhooks do Inngest Cloud ═══
 app.use('/api/inngest', serve({
   client: inngest,
-  functions: [generateSong],
+  functions: [generateSong, regenerateEditedSong],
 }));
 
 process.on('uncaughtException', (err) => console.error('\u26a0\ufe0f Uncaught:', err.message));
