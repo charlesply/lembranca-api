@@ -60,7 +60,7 @@ const regenerateEditedSong = inngest.createFunction(
 
     // ═══ STEP 1: carrega o pedido (letra confirmada, estilo, voz, plano) ═══
     const info = await step.run('load-order', async () => {
-      const rows = await supaFetch('GET', `orders?id=eq.${orderId}&select=id,honoree_name,genre,style_raw,voice_preference,plan,final_lyrics,edit_status,self_edit_used`);
+      const rows = await supaFetch('GET', `orders?id=eq.${orderId}&select=id,honoree_name,genre,style_raw,voice_preference,plan,final_lyrics,edit_status,self_edit_used,paid_at`);
       const o = Array.isArray(rows) && rows[0];
       if (!o) throw new NonRetriableError('pedido não encontrado');
       return o;
@@ -124,9 +124,24 @@ const regenerateEditedSong = inngest.createFunction(
       throw new Error('timeout: nenhum clip novo ficou pronto'); // onFailure marca edit_error
     }
     const best = completed[0];
+    const isPaid = !!info.paid_at;
+    const isVideoPlan = isPaid && VIDEO_PLAN_KEYS.includes(info.plan);
+
+    // ═══ STEP 4a (só PRÉVIA): gera uma nova PRÉVIA 30s do melhor clip ═══
+    // Pedido não-pago editou a prévia → mostramos uma prévia nova (com marca
+    // d'água). O full fica gravado mas gated até o pagamento.
+    let newPreviewUrl = null;
+    if (!isPaid) {
+      newPreviewUrl = await step.run('edit-new-preview', async () => {
+        try {
+          const { createPreviewFromUrl, SELF_URL } = require('../../lib/audio');
+          const p = await createPreviewFromUrl(best.audio_url, orderId, title);
+          return `${SELF_URL}/api/preview/${encodeURIComponent(p.previewFilename)}`;
+        } catch (e) { console.error('[EditRegen] preview err', e.message); return null; }
+      });
+    }
 
     // ═══ STEP 4: grava as versões NOVAS (mantém as antigas em prev_audio_urls) ═══
-    const isVideoPlan = VIDEO_PLAN_KEYS.includes(info.plan);
     await step.run('save-new-versions', async () => {
       // Link PERMANENTE (cdn1) — nunca expira. Ver lib/sunoApi.clipCdnUrl.
       const patch = {
@@ -136,21 +151,19 @@ const regenerateEditedSong = inngest.createFunction(
         edit_status: 'done',
         error_message: null,
       };
-      // Plano com vídeo: limpa o vídeo antigo (será regenerado do novo áudio+letra).
+      // Prévia: atualiza a prévia visível (o full continua gated até pagar).
+      if (!isPaid && newPreviewUrl) patch.preview_audio_url = newPreviewUrl;
+      // Plano com vídeo (só pago): limpa o vídeo antigo (regenera do novo áudio+letra).
       if (isVideoPlan) {
         patch.video_brinde_url = null;
         patch.video_brinde_job_id = null;
         patch.video_brinde_started_at = null;
       }
       await supaFetch('PATCH', `orders?id=eq.${orderId}`, patch);
-      console.log(`[EditRegen] ✅ novas versões salvas order=${orderId} (${patch.full_audio_urls.length} clips)${isVideoPlan ? ' + vídeo p/ regenerar' : ''}`);
+      console.log(`[EditRegen] ✅ ${isPaid ? 'versões' : 'PRÉVIA'} nova(s) order=${orderId} (${patch.full_audio_urls.length} clips)${isVideoPlan ? ' + vídeo p/ regenerar' : ''}`);
     });
 
-    // ═══ STEP 4b: cria o job do vídeo DIRETO (não depende do cron newOnes) ═══
-    // O cron `newOnes` ordena por paid_at.desc (limit 4) → pedidos antigos que
-    // fizeram self-edit ficavam famintos e o vídeo nunca saía. Aqui criamos +
-    // PERSISTIMOS o job_id (rápido, sem pollar); o cron `pendingJobs` (ordenado
-    // por started_at.asc, sem starvation) retoma o poll e finaliza.
+    // ═══ STEP 4b (só pago + vídeo): cria o job do vídeo DIRETO ═══
     if (isVideoPlan) {
       await step.run('kick-video', async () => {
         const { createBrindeJob } = require('../../lib/brindeVideo');
@@ -159,15 +172,18 @@ const regenerateEditedSong = inngest.createFunction(
       });
     }
 
-    // ═══ STEP 5: e-mail "nova música pronta" ═══
-    await step.run('email-edit-ready', async () => {
-      const rows = await supaFetch('GET', `orders?id=eq.${orderId}&select=id,honoree_name,customer_name,customer_email,plan`);
-      const o = Array.isArray(rows) && rows[0];
-      if (!o) return { skipped: 'no_order' };
-      return await sendEditReadyEmail(o);
-    });
+    // ═══ STEP 5 (só pago): e-mail "nova música pronta" ═══
+    // Prévia não recebe e-mail (cliente está no site vendo a nova prévia; e ainda vai pagar).
+    if (isPaid) {
+      await step.run('email-edit-ready', async () => {
+        const rows = await supaFetch('GET', `orders?id=eq.${orderId}&select=id,honoree_name,customer_name,customer_email,plan`);
+        const o = Array.isArray(rows) && rows[0];
+        if (!o) return { skipped: 'no_order' };
+        return await sendEditReadyEmail(o);
+      });
+    }
 
-    return { ok: true, orderId, clips: completed.length, video: isVideoPlan };
+    return { ok: true, orderId, clips: completed.length, video: isVideoPlan, paid: isPaid };
   }
 );
 

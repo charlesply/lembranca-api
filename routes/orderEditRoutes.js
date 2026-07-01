@@ -33,10 +33,11 @@ router.post('/api/order/:id/edit/lyrics', async (req, res) => {
   try {
     const id = req.params.id;
     if (!_isUuid(id)) return res.status(400).json({ error: 'id invalido' });
-    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=id,paid_at,self_edit_used,lyric_regen_count,honoree_name,relationship,occasion,genre,mood,voice_preference,story,final_lyrics,style_raw`);
+    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=id,paid_at,preview_audio_url,self_edit_used,lyric_regen_count,honoree_name,relationship,occasion,genre,mood,voice_preference,story,final_lyrics,style_raw`);
     const o = Array.isArray(rows) && rows[0];
     if (!o) return res.status(404).json({ error: 'nao encontrado' });
-    if (!o.paid_at) return res.status(403).json({ error: 'not_paid', message: 'pedido não pago' });
+    // Pode editar quem PAGOU (ajusta a música) OU quem tem PRÉVIA (ajusta a prévia, ainda vai pagar).
+    if (!o.paid_at && !o.preview_audio_url) return res.status(403).json({ error: 'not_ready', message: 'pedido ainda não tem prévia' });
     if (o.self_edit_used) return res.status(409).json({ error: 'already_used', message: 'você já criou sua nova música' });
     const used = Number(o.lyric_regen_count) || 0;
     if (used >= MAX_LYRIC_GENS) return res.status(429).json({ error: 'limit_reached', message: 'limite de gerações de letra atingido', remaining: 0 });
@@ -79,10 +80,10 @@ router.post('/api/order/:id/edit/confirm', async (req, res) => {
   try {
     const id = req.params.id;
     if (!_isUuid(id)) return res.status(400).json({ error: 'id invalido' });
-    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=id,paid_at,self_edit_used,full_audio_urls,original_audio_url,prev_audio_urls,suno_clip_ids`);
+    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=id,paid_at,preview_audio_url,self_edit_used,full_audio_urls,original_audio_url,prev_audio_urls,suno_clip_ids`);
     const o = Array.isArray(rows) && rows[0];
     if (!o) return res.status(404).json({ error: 'nao encontrado' });
-    if (!o.paid_at) return res.status(403).json({ error: 'not_paid' });
+    if (!o.paid_at && !o.preview_audio_url) return res.status(403).json({ error: 'not_ready' });
     if (o.self_edit_used) return res.status(409).json({ error: 'already_used', message: 'você já criou sua nova música' });
 
     const lyrics = _clip(req.body?.lyrics || '', 6000);
