@@ -19,9 +19,21 @@ const { isUuid: _isUuid, clip: _clip } = require('../lib/validators');
 
 const router = express.Router();
 
-// GET /api/order/lookup?phone=... — busca pedidos pelo telefone (variantes com/sem 55 e com/sem 9).
+// GET /api/order/lookup?phone=... (ou ?email=...) — busca os últimos pedidos.
+// Telefone: variantes com/sem 55 e com/sem 9. E-mail: match exato (case-insensitive).
 router.get('/api/order/lookup', async (req, res) => {
   try {
+    const cols = 'id,status,honoree_name,customer_name,phone,preview_audio_url,original_audio_url,full_audio_urls,video_brinde_url,paid_at,created_at';
+
+    // ── Busca por E-MAIL ──
+    const email = (req.query.email || '').toString().trim().toLowerCase();
+    if (email) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'email invalido' });
+      const rows = await supaFetch('GET', `orders?customer_email=eq.${encodeURIComponent(email)}&select=${cols}&order=created_at.desc&limit=5`);
+      return res.json({ ok: true, orders: Array.isArray(rows) ? rows : [] });
+    }
+
+    // ── Busca por TELEFONE ──
     const raw = (req.query.phone || '').toString().replace(/\D/g, '').slice(0, 15);
     if (raw.length < 10) return res.status(400).json({ error: 'phone invalido' });
     // Normaliza pra numero NACIONAL (10 ou 11 digitos). So remove o "55" quando
@@ -37,7 +49,6 @@ router.get('/api/order/lookup', async (req, res) => {
       const no9 = rest.length === 9 ? rest.slice(1) : rest;
       for (const r of [with9, no9]) { variants.add(ddd + r); variants.add('55' + ddd + r); }
     }
-    const cols = 'id,status,honoree_name,customer_name,preview_audio_url,original_audio_url,full_audio_urls,video_brinde_url,paid_at,created_at';
     // usa eq. em loop (axios encoda mal o in.()) — junta e deduplica
     const byId = {};
     for (const v of variants) {
