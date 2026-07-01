@@ -19,7 +19,7 @@ const { NonRetriableError } = require('inngest');
 const { supaFetch } = require('../../lib/supabase');
 const sunoProvider = require('../../lib/sunoProvider');
 const { clipCdnUrl } = require('../../lib/sunoApi');
-const { sendEditReadyEmail } = require('../../lib/emailDelivery');
+const { sendEditReadyEmail, sendPreviewReadyEmail } = require('../../lib/emailDelivery');
 
 // Planos que incluem vídeo (completa + promos c/ vídeo). Fonte única: payPlans.
 let VIDEO_PLAN_KEYS = ['completa'];
@@ -172,16 +172,15 @@ const regenerateEditedSong = inngest.createFunction(
       });
     }
 
-    // ═══ STEP 5 (só pago): e-mail "nova música pronta" ═══
-    // Prévia não recebe e-mail (cliente está no site vendo a nova prévia; e ainda vai pagar).
-    if (isPaid) {
-      await step.run('email-edit-ready', async () => {
-        const rows = await supaFetch('GET', `orders?id=eq.${orderId}&select=id,honoree_name,customer_name,customer_email,plan`);
-        const o = Array.isArray(rows) && rows[0];
-        if (!o) return { skipped: 'no_order' };
-        return await sendEditReadyEmail(o);
-      });
-    }
+    // ═══ STEP 5: e-mail "nova música/prévia pronta" ═══
+    // PAGO → "nova música pronta" (leva pro /p/). NÃO-PAGO → "nova prévia pronta"
+    // (leva pro /finalizar pra pagar). Ambos 1x (idempotência do step).
+    await step.run('email-edit-ready', async () => {
+      const rows = await supaFetch('GET', `orders?id=eq.${orderId}&select=id,honoree_name,customer_name,customer_email,plan`);
+      const o = Array.isArray(rows) && rows[0];
+      if (!o) return { skipped: 'no_order' };
+      return isPaid ? await sendEditReadyEmail(o) : await sendPreviewReadyEmail(o);
+    });
 
     return { ok: true, orderId, clips: completed.length, video: isVideoPlan, paid: isPaid };
   }
