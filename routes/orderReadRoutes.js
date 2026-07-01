@@ -37,7 +37,7 @@ router.get('/api/order/lookup', async (req, res) => {
       const no9 = rest.length === 9 ? rest.slice(1) : rest;
       for (const r of [with9, no9]) { variants.add(ddd + r); variants.add('55' + ddd + r); }
     }
-    const cols = 'id,status,honoree_name,customer_name,preview_audio_url,original_audio_url,video_brinde_url,paid_at,created_at';
+    const cols = 'id,status,honoree_name,customer_name,preview_audio_url,original_audio_url,full_audio_urls,video_brinde_url,paid_at,created_at';
     // usa eq. em loop (axios encoda mal o in.()) — junta e deduplica
     const byId = {};
     for (const v of variants) {
