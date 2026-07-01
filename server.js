@@ -31,6 +31,7 @@ const payRoutes = require('./routes/payRoutes');
 const orderReadRoutes = require('./routes/orderReadRoutes');
 const orderWriteRoutes = require('./routes/orderWriteRoutes');
 const orderEditRoutes = require('./routes/orderEditRoutes');
+const recoveryRoutes = require('./routes/recoveryRoutes');
 const promoRoutes = require('./routes/promoRoutes');
 
 // Multer config: aceita audio ate 25MB (limite do Whisper)
@@ -57,6 +58,7 @@ app.use(payRoutes);
 app.use(orderReadRoutes);
 app.use(orderWriteRoutes);
 app.use(orderEditRoutes);
+app.use(recoveryRoutes);
 app.use(promoRoutes);
 
 const PORT = process.env.PORT || 3000;
@@ -224,6 +226,12 @@ app.listen(PORT, '0.0.0.0', () => {
     const { startBrindeGenCron } = require('./lib/brindeVideo');
     startBrindeGenCron();
   } catch (err) { console.error('[BrindeVideo] falha ao iniciar cron (ignorado):', err.message); }
+  // Cron de RECUPERAÇÃO ATIVA por e-mail (7min pós-prévia não-paga, A/B). DESLIGADO
+  // por padrão — só roda com RECOVERY_EMAIL_ENABLED=true (segurança anti-blast).
+  try {
+    const { startRecoveryEmailCron } = require('./lib/recoveryEmailCron');
+    startRecoveryEmailCron();
+  } catch (err) { console.error('[recoveryCron] falha ao iniciar (ignorado):', err.message); }
   // Cron CAPI Monitor — rede de segurança pra Meta CAPI. Varre orders pagas das últimas 24h
   // sem meta_capi_sent e reenvia o Purchase. Cobre falhas do webhook AbacatePay, restart no
   // exato momento do pagamento, token vazio, etc. Default ON em prod.
