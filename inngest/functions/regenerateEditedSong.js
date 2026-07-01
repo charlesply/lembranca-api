@@ -146,18 +146,16 @@ const regenerateEditedSong = inngest.createFunction(
       console.log(`[EditRegen] ✅ novas versões salvas order=${orderId} (${patch.full_audio_urls.length} clips)${isVideoPlan ? ' + vídeo p/ regenerar' : ''}`);
     });
 
-    // ═══ STEP 4b: dispara o vídeo DIRETO (não depende do cron) ═══
-    // O cron brindeVideo prioriza paid_at recente (limit 4) → pedidos antigos
-    // que fizeram self-edit ficavam na fila e o vídeo nunca saía. Aqui chamamos
-    // a geração direto (fire-and-forget); ela persiste o job_id cedo, então se o
-    // processo cair o cron (passo pendingJobs, sem starvation) retoma.
+    // ═══ STEP 4b: cria o job do vídeo DIRETO (não depende do cron newOnes) ═══
+    // O cron `newOnes` ordena por paid_at.desc (limit 4) → pedidos antigos que
+    // fizeram self-edit ficavam famintos e o vídeo nunca saía. Aqui criamos +
+    // PERSISTIMOS o job_id (rápido, sem pollar); o cron `pendingJobs` (ordenado
+    // por started_at.asc, sem starvation) retoma o poll e finaliza.
     if (isVideoPlan) {
       await step.run('kick-video', async () => {
-        try {
-          const { generateBrindeForOrder } = require('../../lib/brindeVideo');
-          generateBrindeForOrder(orderId).catch(e => console.error('[EditRegen] kick-video err', e.message));
-        } catch (e) { console.error('[EditRegen] kick-video require err', e.message); }
-        return { kicked: true };
+        const { createBrindeJob } = require('../../lib/brindeVideo');
+        const jobId = await createBrindeJob(orderId);
+        return { jobId: jobId || null };
       });
     }
 
