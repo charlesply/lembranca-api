@@ -24,12 +24,19 @@ router.get('/api/order/lookup', async (req, res) => {
   try {
     const raw = (req.query.phone || '').toString().replace(/\D/g, '').slice(0, 15);
     if (raw.length < 10) return res.status(400).json({ error: 'phone invalido' });
-    const variants = new Set([raw]);
-    if (raw.startsWith('55')) variants.add(raw.slice(2)); else variants.add('55' + raw);
-    // variante sem o 9 do celular (DDD + 9 + 8 digitos) e com o 9
-    const m = raw.replace(/^55/, '');
-    if (m.length === 11 && m[2] === '9') variants.add((raw.startsWith('55') ? '55' : '') + m.slice(0, 2) + m.slice(3));
-    if (m.length === 10) variants.add((raw.startsWith('55') ? '55' : '') + m.slice(0, 2) + '9' + m.slice(2));
+    // Normaliza pra numero NACIONAL (10 ou 11 digitos). So remove o "55" quando
+    // for CODIGO DE PAIS (numero com 12-13 digitos) — num nacional o "55" inicial
+    // e o DDD (Rio Grande do Sul) e NAO pode ser removido.
+    const nat = (raw.length >= 12 && raw.startsWith('55')) ? raw.slice(2) : raw;
+    const variants = new Set([raw, nat, '55' + nat]);
+    // gera com/sem o 9 do celular, nas formas nacional e internacional
+    if (nat.length === 11 || nat.length === 10) {
+      const ddd = nat.slice(0, 2);
+      const rest = nat.slice(2);
+      const with9 = rest.length === 9 ? rest : '9' + rest;
+      const no9 = rest.length === 9 ? rest.slice(1) : rest;
+      for (const r of [with9, no9]) { variants.add(ddd + r); variants.add('55' + ddd + r); }
+    }
     const cols = 'id,status,honoree_name,customer_name,preview_audio_url,original_audio_url,video_brinde_url,paid_at,created_at';
     // usa eq. em loop (axios encoda mal o in.()) — junta e deduplica
     const byId = {};
