@@ -203,33 +203,36 @@ const generateSong = inngest.createFunction(
     // o erro propaga normalmente e cai no handler abaixo.
     //
     // Retorno do step (SLIM, evita 4MB limit): { provider, taskId?, clipIds? }
+    // Args de geração (prompt/título/estilo/voz) — no ESCOPO DA FUNÇÃO pra que
+    // TANTO o submit inicial QUANTO o auto-resubmit (mais abaixo) enxerguem.
+    // 🐞 BUG corrigido: antes eram `const` dentro do 1º step → o auto-resubmit
+    // (quando o Suno retorna FAILED) dava "finalPrompt is not defined" e a prévia
+    // falhava. Agora ficam acessíveis por closure em ambos os steps.
+    const finalPrompt = lyrics || d.prompt || '';
+    const finalTitle = d.title || (d.honoreeName ? `Para ${d.honoreeName}` : 'Sua Musica');
+    const finalStyle = d.tags || d.genre || '';
+    const finalInstrumental = !!d.make_instrumental;
+    const fallbackArgs = {
+      prompt: finalPrompt,
+      tags: finalStyle,
+      title: finalTitle,
+      model: d.model,
+      make_instrumental: finalInstrumental,
+      negative_tags: d.negative_tags,
+      vocal_gender: d.vocal_gender || (/masculin|\bmale\b|homem/i.test(d.voice || '') ? 'male' : /feminin|female|mulher/i.test(d.voice || '') ? 'female' : undefined),
+      wait_audio: false,
+    };
+    // Normaliza voz: o quiz manda "Masculino"/"Feminino"/"male"/"female"/etc.
+    // sunoapi.org aceita só 'm' | 'f'. Detecção carinhosa.
+    const voiceRaw = d.vocal_gender || d.voice || '';
+    const vocalGender = /^m$|masculin|\bmale\b|homem/i.test(voiceRaw) ? 'm'
+                      : /^f$|feminin|female|mulher/i.test(voiceRaw) ? 'f'
+                      : undefined;
+
     let submitRef;
     try {
       submitRef = await step.run('suno-start-generation', async () => {
-        const finalPrompt = lyrics || d.prompt || '';
-        const finalTitle = d.title || (d.honoreeName ? `Para ${d.honoreeName}` : 'Sua Musica');
-        const finalStyle = d.tags || d.genre || '';
-        const finalInstrumental = !!d.make_instrumental;
         console.log(`[Inngest] 🎵 Iniciando geração para ${d.honoreeName || 'N/A'} (provider policy: ${sunoProvider.POLICY})...`);
-
-        // Args completos pro fallback via SunoClient (caminho legacy preservado)
-        const fallbackArgs = {
-          prompt: finalPrompt,
-          tags: finalStyle,
-          title: finalTitle,
-          model: d.model,
-          make_instrumental: finalInstrumental,
-          negative_tags: d.negative_tags,
-          vocal_gender: d.vocal_gender || (/masculin|\bmale\b|homem/i.test(d.voice || '') ? 'male' : /feminin|female|mulher/i.test(d.voice || '') ? 'female' : undefined),
-          wait_audio: false,
-        };
-
-        // Normaliza voz: o quiz manda "Masculino"/"Feminino"/"male"/"female"/etc.
-        // sunoapi.org aceita só 'm' | 'f'. Detecção carinhosa.
-        const voiceRaw = d.vocal_gender || d.voice || '';
-        const vocalGender = /^m$|masculin|\bmale\b|homem/i.test(voiceRaw) ? 'm'
-                          : /^f$|feminin|female|mulher/i.test(voiceRaw) ? 'f'
-                          : undefined;
 
         let result;
         try {
