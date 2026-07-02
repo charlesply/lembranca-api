@@ -25,6 +25,24 @@ router.get('/api/order/lookup', async (req, res) => {
   try {
     const cols = 'id,status,honoree_name,customer_name,phone,preview_audio_url,original_audio_url,full_audio_urls,video_brinde_url,paid_at,created_at,prev_audio_urls,self_edit_used,edit_status';
 
+    // Dedup por HOMENAGEADO preferindo o MELHOR pedido (bug de duplicação do
+    // frontend cria vários pedidos iguais). Rank: pago > tem música > tem prévia
+    // > resto; empate = mais recente. Assim o cliente vê a música PAGA, não uma
+    // prévia duplicada não-paga do mesmo homenageado.
+    const _rank = (o) => o.paid_at ? 0
+      : (Array.isArray(o.full_audio_urls) && o.full_audio_urls.filter(Boolean).length) ? 1
+      : (o.preview_audio_url ? 2 : 3);
+    const dedupByHonoree = (list) => {
+      const best = {};
+      for (const o of (list || [])) {
+        const k = String(o.honoree_name || '').trim().toLowerCase() || o.id;
+        const cur = best[k];
+        if (!cur || _rank(o) < _rank(cur) || (_rank(o) === _rank(cur) && String(o.created_at) > String(cur.created_at))) best[k] = o;
+      }
+      // ordena: pago/completo primeiro, depois mais recente
+      return Object.values(best).sort((a, b) => (_rank(a) - _rank(b)) || String(b.created_at).localeCompare(String(a.created_at)));
+    };
+
     // ── Busca por NÚMERO DO PEDIDO (#XXXXXXXX curto ou UUID completo) ──
     const orderQ = (req.query.order || '').toString().replace(/[^0-9a-fA-F]/g, '').toLowerCase();
     if (orderQ) {
@@ -48,8 +66,8 @@ router.get('/api/order/lookup', async (req, res) => {
     const email = (req.query.email || '').toString().trim().toLowerCase();
     if (email) {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'email invalido' });
-      const rows = await supaFetch('GET', `orders?customer_email=eq.${encodeURIComponent(email)}&select=${cols}&order=created_at.desc&limit=5`);
-      return res.json({ ok: true, orders: Array.isArray(rows) ? rows : [] });
+      const rows = await supaFetch('GET', `orders?customer_email=eq.${encodeURIComponent(email)}&select=${cols}&order=created_at.desc&limit=20`);
+      return res.json({ ok: true, orders: dedupByHonoree(Array.isArray(rows) ? rows : []).slice(0, 5) });
     }
 
     // ── Busca por TELEFONE ──
@@ -71,12 +89,11 @@ router.get('/api/order/lookup', async (req, res) => {
     // usa eq. em loop (axios encoda mal o in.()) — junta e deduplica
     const byId = {};
     for (const v of variants) {
-      const rows = await supaFetch('GET', `orders?phone=eq.${v}&select=${cols}&order=created_at.desc&limit=5`);
+      const rows = await supaFetch('GET', `orders?phone=eq.${v}&select=${cols}&order=created_at.desc&limit=15`);
       if (Array.isArray(rows)) for (const r of rows) byId[r.id] = r;
     }
-    const orders = Object.values(byId)
-      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
-      .slice(0, 5);
+    // Dedup por homenageado (pago primeiro) → some as dupes; cliente vê a paga.
+    const orders = dedupByHonoree(Object.values(byId)).slice(0, 5);
     res.json({ ok: true, orders });
   } catch (e) {
     console.error('[/api/order/lookup] erro:', e.message);
