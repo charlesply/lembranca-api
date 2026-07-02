@@ -17,8 +17,13 @@ const axios = require('axios');
 const { supaFetch } = require('../lib/supabase');
 const { PAY_PLANS } = require('../lib/payPlans');
 const { isUuid: _isUuid } = require('../lib/validators');
+const { createWooviCharge, WOOVI_APP_ID } = require('../lib/woovi');
 
 const router = express.Router();
+
+// Provedor de PIX ativo. 'woovi' ou 'abacate'. Default segue AbacatePay pra não
+// mudar nada sem querer; setar PIX_PROVIDER=woovi no Coolify pra virar a chave.
+const PIX_PROVIDER = (process.env.PIX_PROVIDER || 'abacate').toLowerCase();
 
 // ═══════════════════════════════════════════════════════════════
 // PAGAMENTO — InfinitePay Checkout (LEGADO, mantido por links antigos):
@@ -43,12 +48,50 @@ const ABACATEPAY_API = 'https://api.abacatepay.com/v2';
 
 router.post('/api/pay/create', async (req, res) => {
   try {
-    if (!ABACATEPAY_API_KEY) return res.status(503).json({ error: 'AbacatePay nao configurado (ABACATEPAY_API_KEY)' });
     const { orderId, plan } = req.body || {};
     if (!_isUuid(orderId)) return res.status(400).json({ error: 'orderId invalido' });
     const p = PAY_PLANS[plan];
     if (!p) return res.status(400).json({ error: 'plano invalido' });
     const cents = p.cents;
+
+    // ═══ WOOVI (ex-OpenPix) — provedor ativo quando PIX_PROVIDER=woovi ═══
+    // Mesma resposta shape do AbacatePay (brCode + brCodeBase64=qrCodeImage URL)
+    // → frontend não muda. correlationID embute orderId+plan pro webhook amarrar.
+    if (PIX_PROVIDER === 'woovi') {
+      if (!WOOVI_APP_ID) return res.status(503).json({ error: 'Woovi nao configurado (WOOVI_APP_ID)' });
+      const correlationID = `${orderId}-${plan}-${Math.floor(Date.now() / 1000)}`;
+      let charge;
+      try {
+        charge = await createWooviCharge({ correlationID, valueCents: cents, comment: p.name });
+      } catch (e) {
+        console.error('[/api/pay/create woovi] erro:', e.response?.data || e.message);
+        return res.status(502).json({ error: 'falha ao gerar PIX (woovi)', detail: String(e.response?.data?.error || e.message) });
+      }
+      const patchPay = {
+        bill_id: charge.correlationID || correlationID,
+        abacate_charge_id: charge.globalID || charge.identifier || correlationID,
+        abacate_brcode: charge.brCode,
+        abacate_qrcode: charge.qrCodeImage,
+        abacate_status: 'PENDING',
+        payment_method: 'pix_woovi',
+        payment_amount: cents / 100,
+        plan,
+      };
+      if (p.includes_video) patchPay.video_upsell_status = 'pending_photo';
+      try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (e) { console.error('[/api/pay/create woovi] patch err:', e.message); }
+      console.log('[/api/pay/create] WOOVI PIX criado:', correlationID, 'p/', orderId, '(', cents, 'cents)');
+      return res.json({
+        ok: true,
+        paymentId: charge.correlationID || correlationID,
+        brCode: charge.brCode,
+        brCodeBase64: charge.qrCodeImage,   // URL da imagem do QR (funciona como <img src>)
+        amount: cents,
+        expiresAt: charge.expiresDate || null,
+      });
+    }
+
+    // ═══ ABACATEPAY (default) ═══
+    if (!ABACATEPAY_API_KEY) return res.status(503).json({ error: 'AbacatePay nao configurado (ABACATEPAY_API_KEY)' });
 
     // SEMPRE cria PIX novo com externalId unico — evita dedup do AbacatePay
     // (que retornava cobranca antiga com valor errado quando o cliente trocava plano)

@@ -175,6 +175,86 @@ router.post('/api/webhooks/abacatepay', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// WOOVI (ex-OpenPix) WEBHOOK — confirmação de pagamento PIX.
+//
+// Woovi manda POST com { event, charge, pix }. Pago = event
+// 'OPENPIX:CHARGE_COMPLETED' (e/ou charge.status='COMPLETED'). O orderId é
+// extraído do charge.correlationID (formato "{uuid}-{plan}-{ts}" que criamos em
+// /api/pay/create). Pós-pagamento roda a MESMA entrega do AbacatePay: vídeo +
+// notificação + email transacional + Meta CAPI (tudo fire-and-forget).
+//
+// Segurança: token na query (?token=…) validado contra WOOVI_WEBHOOK_TOKEN.
+// Se o env não estiver setado, aceita mas LOGA aviso (janela de emergência —
+// setar o token depois pra fechar). Configure no painel Woovi a URL:
+//   https://suno-api-novo.bvph.uk/api/webhooks/woovi?token=SEU_TOKEN
+// ═══════════════════════════════════════════════════════════════════════════
+router.post('/api/webhooks/woovi', async (req, res) => {
+  try {
+    const expected = process.env.WOOVI_WEBHOOK_TOKEN;
+    if (expected) {
+      const recv = req.query.token || req.headers['x-webhook-token'];
+      if (recv !== expected) return res.status(401).json({ error: 'unauthorized' });
+    } else {
+      console.warn('[webhook woovi] WOOVI_WEBHOOK_TOKEN não setado — aceitando sem validar (setar pra fechar)');
+    }
+
+    const event = req.body?.event || '';
+    const charge = req.body?.charge || {};
+    // Woovi manda um POST de teste ao cadastrar o webhook — ACK sem processar.
+    if (!event || (!/CHARGE_COMPLETED/i.test(event) && String(charge.status || '').toUpperCase() !== 'COMPLETED')) {
+      return res.json({ ok: true, ignored: event || 'no_event' });
+    }
+
+    const correlationID = charge.correlationID || req.body?.correlationID || '';
+    const m = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(correlationID);
+    const orderId = m?.[1];
+    console.log('[webhook woovi]', event, 'correlationID=', correlationID, '→ orderId=', orderId);
+    if (!orderId) return res.json({ ok: true, found: false });
+
+    const rows = await supaFetch('GET', `orders?id=eq.${orderId}&select=id,status,plan`);
+    const o = rows?.[0];
+    if (!o) return res.json({ ok: true, found: false });
+    if (o.status === 'paid' || o.status === 'delivered') return res.json({ ok: true, already: true });
+
+    await supaFetch('PATCH', `orders?id=eq.${o.id}`, {
+      status: 'paid',
+      abacate_status: 'PAID',
+      paid_at: new Date().toISOString(),
+    });
+    console.log('[webhook woovi] order', o.id, 'PAID plan=', o.plan);
+
+    // ── mesma entrega do AbacatePay (fire-and-forget) ──
+    if (require('../lib/payPlans').isVideoPlan(o.plan)) {
+      try { require('../lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
+    }
+    try { require('../lib/salesNotify').notifySale(o.id); } catch (e) { console.error('[salesNotify] init err:', e.message); }
+    try {
+      const emailRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,honoree_name,customer_name,customer_email,plan,original_audio_url,full_audio_urls,video_brinde_url,email_delivery_sent`);
+      const emailOrder = emailRows?.[0];
+      if (emailOrder && emailOrder.customer_email && !emailOrder.email_delivery_sent) {
+        require('../lib/emailDelivery').sendDeliveryEmail(emailOrder).catch(e => console.error('[webhook woovi] email delivery falhou (cron tenta de novo):', e.message));
+      }
+    } catch (e) { console.error('[webhook woovi] erro ao buscar pra email (ignorado):', e.message); }
+    try {
+      let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
+      if (!Array.isArray(fullRows) || !fullRows[0]) {
+        fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
+      }
+      const fullOrder = fullRows?.[0];
+      if (fullOrder && !fullOrder.meta_capi_sent) {
+        const result = await sendPurchaseToMeta(fullOrder);
+        if (result?.ok) await supaFetch('PATCH', `orders?id=eq.${o.id}`, { meta_capi_sent: true });
+      }
+    } catch (e) { console.error('[webhook woovi] CAPI falhou (ignorado):', e.message); }
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[webhook woovi] erro:', e.message);
+    res.status(500).json({ error: 'erro interno' });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // WEBHOOK Resend — atualiza promo_campaigns com eventos de email.
 //
