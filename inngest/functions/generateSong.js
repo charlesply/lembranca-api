@@ -85,9 +85,10 @@ const generateSong = inngest.createFunction(
 
       console.error(`[Inngest/onFailure] ❌ Retries esgotados para order=${orderId}: ${error.message}`);
 
-      // Verificar status atual antes de regredir
-      const current = await supaFetch('GET', `orders?id=eq.${orderId}&select=status`);
-      const currentStatus = current?.[0]?.status;
+      // Verificar status atual antes de regredir (+ dados do cliente pro alerta)
+      const current = await supaFetch('GET', `orders?id=eq.${orderId}&select=id,status,honoree_name,customer_name,customer_email,phone`);
+      const ord = current?.[0] || { id: orderId };
+      const currentStatus = ord.status;
 
       if (['preview_sent', 'paid', 'delivered'].includes(currentStatus)) {
         // Música já foi entregue — NÃO regride pra failed, apenas registra o erro
@@ -96,11 +97,16 @@ const generateSong = inngest.createFunction(
           error_message: `[NÃO-FATAL pós-${currentStatus}] Inngest: ${error.message}`,
         });
       } else {
-        // Realmente falhou antes de entregar
+        // Realmente falhou antes de entregar (prévia NÃO gerada). Marca failed +
+        // ALERTA por e-mail pro dono identificando o cliente (pagamento fica
+        // bloqueado sem prévia — ele precisa regenerar/atender).
         await supaFetch('PATCH', `orders?id=eq.${orderId}`, {
           status: 'failed',
           error_message: `Inngest: ${error.message}`,
         });
+        try {
+          await require('../../lib/emailDelivery').sendPreviewErrorAlert(ord, error.message);
+        } catch (e) { console.error('[Inngest/onFailure] alerta de prévia falhou (ignorado):', e.message); }
       }
     },
   },

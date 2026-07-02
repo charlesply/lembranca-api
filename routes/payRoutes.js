@@ -54,6 +54,17 @@ router.post('/api/pay/create', async (req, res) => {
     if (!p) return res.status(400).json({ error: 'plano invalido' });
     const cents = p.cents;
 
+    // 🔒 TRAVA ESTRUTURAL (fonte de verdade): SEM PRÉVIA gerada, NÃO cria cobrança.
+    // Impede o cenário "pago sem música" de raiz — se a música/prévia não existe,
+    // não há como pagar. Vale pra Woovi E AbacatePay (antes das duas branches).
+    const _ord = await supaFetch('GET', `orders?id=eq.${orderId}&select=preview_audio_url,status,paid_at`);
+    const _oo = Array.isArray(_ord) && _ord[0];
+    if (!_oo) return res.status(404).json({ error: 'pedido nao encontrado' });
+    if (!_oo.preview_audio_url) {
+      console.warn('[/api/pay/create] BLOQUEADO sem prévia — order', orderId, 'status', _oo.status);
+      return res.status(409).json({ error: 'sem_previa', message: 'A prévia da sua música ainda não ficou pronta — não dá pra pagar ainda. Aguarde uns minutinhos ou fale com a gente 💛' });
+    }
+
     // ═══ WOOVI (ex-OpenPix) — provedor ativo quando PIX_PROVIDER=woovi ═══
     // Mesma resposta shape do AbacatePay (brCode + brCodeBase64=qrCodeImage URL)
     // → frontend não muda. correlationID embute orderId+plan pro webhook amarrar.
