@@ -286,6 +286,15 @@ app.listen(PORT, '0.0.0.0', () => {
     startSiteMonitorCron();
   } catch (err) { console.error('[siteMonitor] falha ao iniciar cron (ignorado):', err.message); }
 
+  // Monitor operacional unificado — alerta por E-MAIL (charles.cmh7) quando algo
+  // sai do normal: AbacatePay não gera PIX (5min), disco VPS, SUNOAPI<40k,
+  // Supabase>80%, sem-vendas>=15min (7h-23h59) e geração travada (30min).
+  // Gated por OPS_MONITOR_ENABLED=false.
+  try {
+    const { startCron: startOpsMonitorCron } = require('./lib/opsMonitor');
+    startOpsMonitorCron();
+  } catch (err) { console.error('[opsMonitor] falha ao iniciar cron (ignorado):', err.message); }
+
   try {
     const { startDailyReportCron } = require('./lib/dailyReport');
     startDailyReportCron();

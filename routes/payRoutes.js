@@ -47,6 +47,7 @@ const ABACATEPAY_API_KEY = process.env.ABACATEPAY_API_KEY || '';
 const ABACATEPAY_API = 'https://api.abacatepay.com/v2';
 
 router.post('/api/pay/create', async (req, res) => {
+  let abacateAttempted = false; // p/ opsMonitor: só registra outcome se chegou a chamar a AbacatePay
   try {
     const { orderId, plan } = req.body || {};
     if (!_isUuid(orderId)) return res.status(400).json({ error: 'orderId invalido' });
@@ -109,6 +110,7 @@ router.post('/api/pay/create', async (req, res) => {
     const extId = `${orderId}-${plan}-${Math.floor(Date.now() / 1000)}`;
 
     // Cria cobranca PIX na AbacatePay
+    abacateAttempted = true;
     const ar = await axios.post(`${ABACATEPAY_API}/transparents/create`, {
       method: 'PIX',
       data: {
@@ -126,9 +128,11 @@ router.post('/api/pay/create', async (req, res) => {
     const data = ar.data?.data;
     if (!data?.id || !data?.brCode) {
       console.error('[/api/pay/create] resposta inesperada:', ar.data);
+      try { require('../lib/opsMonitor').recordAbacateOutcome(false); } catch (_) {}
       return res.status(502).json({ error: 'falha ao gerar PIX' });
     }
 
+    try { require('../lib/opsMonitor').recordAbacateOutcome(true); } catch (_) {}
     console.log('[/api/pay/create] AbacatePay PIX criado:', data.id, 'p/', orderId, '(', cents, 'cents)');
 
     // grava na order pra webhook + polling acharem
@@ -155,6 +159,8 @@ router.post('/api/pay/create', async (req, res) => {
     });
   } catch (e) {
     console.error('[/api/pay/create] erro:', e.response?.data || e.message);
+    // só registra falha do Abacate se a request chegou a ser disparada (não em erro pré-gate)
+    if (abacateAttempted) { try { require('../lib/opsMonitor').recordAbacateOutcome(false); } catch (_) {} }
     res.status(500).json({ error: 'erro interno', detail: String(e.response?.data?.error || e.message) });
   }
 });
