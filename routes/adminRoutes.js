@@ -98,7 +98,10 @@ router.get('/api/admin/capi_token_rotate_run', adminAuth, async (req, res) => {
 router.get('/api/admin/email_delivery_run', adminAuth, async (req, res) => {
   try {
     const { runOnce } = require('../lib/emailDeliveryMonitor');
-    const r = await runOnce();
+    // ?hours= e ?limit= permitem backfill sob demanda (janela/limite maiores)
+    const lookbackHours = req.query.hours ? Number(req.query.hours) : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const r = await runOnce({ lookbackHours, limit });
     res.json({ ok: true, ...r });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
