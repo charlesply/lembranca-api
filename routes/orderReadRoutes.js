@@ -32,15 +32,25 @@ router.get('/api/order/lookup', async (req, res) => {
     const _rank = (o) => o.paid_at ? 0
       : (Array.isArray(o.full_audio_urls) && o.full_audio_urls.filter(Boolean).length) ? 1
       : (o.preview_audio_url ? 2 : 3);
+    // 🚨 PAGO NUNCA É DEDUPADO. Se o cliente pagou 2x pro mesmo homenageado,
+    // são 2 músicas DIFERENTES que ele escolheu comprar — mostra TODAS.
+    // Dedup só vale pra rascunhos NÃO-pagos (ruído da duplicação do quiz), e
+    // ainda ignora rascunho de homenageado que já tem um pago.
     const dedupByHonoree = (list) => {
-      const best = {};
-      for (const o of (list || [])) {
+      const arr = list || [];
+      const paid = arr.filter(o => o.paid_at); // todos os pagos ficam
+      const paidHonorees = new Set(paid.map(o => String(o.honoree_name || '').trim().toLowerCase()));
+      const bestUnpaid = {};
+      for (const o of arr) {
+        if (o.paid_at) continue;
         const k = String(o.honoree_name || '').trim().toLowerCase() || o.id;
-        const cur = best[k];
-        if (!cur || _rank(o) < _rank(cur) || (_rank(o) === _rank(cur) && String(o.created_at) > String(cur.created_at))) best[k] = o;
+        if (paidHonorees.has(k)) continue; // já tem pago desse homenageado → não mostra rascunho solto
+        const cur = bestUnpaid[k];
+        if (!cur || _rank(o) < _rank(cur) || (_rank(o) === _rank(cur) && String(o.created_at) > String(cur.created_at))) bestUnpaid[k] = o;
       }
       // ordena: pago/completo primeiro, depois mais recente
-      return Object.values(best).sort((a, b) => (_rank(a) - _rank(b)) || String(b.created_at).localeCompare(String(a.created_at)));
+      return [...paid, ...Object.values(bestUnpaid)]
+        .sort((a, b) => (_rank(a) - _rank(b)) || String(b.created_at).localeCompare(String(a.created_at)));
     };
 
     // ── Busca por NÚMERO DO PEDIDO (#XXXXXXXX curto ou UUID completo) ──
