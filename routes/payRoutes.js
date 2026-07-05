@@ -89,7 +89,7 @@ router.post('/api/pay/create', async (req, res) => {
         payment_amount: cents / 100,
         plan,
       };
-      if (p.includes_video) patchPay.video_upsell_status = 'pending_photo';
+      if (p.includes_video) patchPay.video_upsell_status = 'brinde_pending';
       try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (e) { console.error('[/api/pay/create woovi] patch err:', e.message); }
       console.log('[/api/pay/create] WOOVI PIX criado:', correlationID, 'p/', orderId, '(', cents, 'cents)');
       return res.json({
@@ -146,7 +146,7 @@ router.post('/api/pay/create', async (req, res) => {
       payment_amount: cents / 100,
       plan,
     };
-    if (p.includes_video) patchPay.video_upsell_status = 'pending_photo';
+    if (p.includes_video) patchPay.video_upsell_status = 'brinde_pending';
     try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (e) { console.error('[/api/pay/create] patch err:', e.message); }
 
     res.json({
