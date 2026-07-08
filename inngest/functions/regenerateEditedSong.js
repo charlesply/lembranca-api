@@ -60,7 +60,7 @@ const regenerateEditedSong = inngest.createFunction(
 
     // ═══ STEP 1: carrega o pedido (letra confirmada, estilo, voz, plano) ═══
     const info = await step.run('load-order', async () => {
-      const rows = await supaFetch('GET', `orders?id=eq.${orderId}&select=id,honoree_name,genre,style_raw,voice_preference,plan,final_lyrics,edit_status,self_edit_used,paid_at`);
+      const rows = await supaFetch('GET', `orders?id=eq.${orderId}&select=id,honoree_name,genre,mood,style_raw,style_sanitized,voice_preference,plan,final_lyrics,edit_status,self_edit_used,paid_at`);
       const o = Array.isArray(rows) && rows[0];
       if (!o) throw new NonRetriableError('pedido não encontrado');
       return o;
@@ -68,10 +68,21 @@ const regenerateEditedSong = inngest.createFunction(
 
     const lyrics = (d.lyrics || info.final_lyrics || '').toString();
     if (!lyrics.trim()) throw new NonRetriableError('sem letra pra gerar');
-    const style = info.genre || info.style_raw || 'MPB';
     const title = info.honoree_name ? `Para ${info.honoree_name}` : 'Sua música';
     const vr = String(info.voice_preference || '');
     const vocalGender = /^m$|masculin|\bmale\b|homem/i.test(vr) ? 'm' : /^f$|feminin|female|mulher/i.test(vr) ? 'f' : undefined;
+    // 🐞 FIX (self-edit trocava voz/estilo): montar as tags IGUAL ao /regenerate
+    // (miscRoutes ~L138) — gênero + mood + "male/female vocals". Antes usava só o
+    // `genre` cru → perdia o clima E o descritor de voz; com só o param vocal_gender
+    // o Suno não segurava a voz (virava feminina) e a música mudava de pegada.
+    const _genre = info.genre || info.style_sanitized || info.style_raw || 'MPB';
+    const _mood = info.mood || '';
+    const _tagParts = [];
+    if (_genre) _tagParts.push(_genre);
+    if (_mood) _tagParts.push(_mood);
+    if (vocalGender === 'm') _tagParts.push('male vocals');
+    else if (vocalGender === 'f') _tagParts.push('female vocals');
+    const style = _tagParts.join(', ') || _genre;
 
     // ═══ STEP 2: submete pro Suno (customMode, letra confirmada) ═══
     const submitRef = await step.run('suno-submit-edit', async () => {
