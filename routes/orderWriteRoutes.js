@@ -53,8 +53,24 @@ router.post('/api/order', async (req, res) => {
     const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw);
     const customer_email = emailValid ? emailRaw : null;
 
+    // Variante de PREÇO (teste A/B) fixada NO PEDIDO — fonte da verdade: o cliente
+    // vê SEMPRE o mesmo preço (qualquer device / link do e-mail). 50% control,
+    // 16,6% cada p37/p47/p67.
+    const _drawVariant = () => {
+      const r = Math.random();
+      if (r < 0.5) return 'control';
+      return ['p37', 'p47', 'p67'][Math.min(2, Math.floor(((r - 0.5) / 0.5) * 3))];
+    };
+    // QA no STAGING pode forçar a variante (?pv → forceVariant). Gated por
+    // Origin/Referer — produção (app.lembrancacantada.com) NUNCA força preço.
+    const _origin = String(req.headers.origin || req.headers.referer || '');
+    const _fv = String(b.forceVariant || '');
+    const price_variant = (/staging\./i.test(_origin) && ['control', 'p37', 'p47', 'p67'].includes(_fv))
+      ? _fv : _drawVariant();
+
     const order = {
       phone,
+      price_variant,
       ...(customer_email ? { customer_email } : {}),
       honoree_name: _clip(honoree, 120),
       customer_name: _clip(b.customer_name || b.clientName, 120),

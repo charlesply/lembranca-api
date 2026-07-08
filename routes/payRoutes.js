@@ -49,28 +49,27 @@ const ABACATEPAY_API = 'https://api.abacatepay.com/v2';
 router.post('/api/pay/create', async (req, res) => {
   let abacateAttempted = false; // p/ opsMonitor: só registra outcome se chegou a chamar a AbacatePay
   try {
-    const { orderId, plan, priceVariant } = req.body || {};
+    const { orderId, plan: clientPlan } = req.body || {};
     if (!_isUuid(orderId)) return res.status(400).json({ error: 'orderId invalido' });
-    // 🔒 ALLOWLIST SERVER-SIDE: valor SEMPRE derivado do planKey aqui (nunca do cliente).
-    // plano fora do PAY_PLANS → 400. Test plans entregam como `musica` (sem video).
-    const p = PAY_PLANS[plan];
-    if (!p) return res.status(400).json({ error: 'plano invalido' });
-    const cents = p.cents;
-    // Teste A/B de preço — só aceita rótulos conhecidos (defensivo). Persistido
-    // abaixo p/ medir conversão; se vier lixo, ignora.
-    const variant = ['control', 'p37', 'p47', 'p67'].includes(priceVariant) ? priceVariant : null;
 
-    // 🔒 TRAVA ESTRUTURAL (fonte de verdade): SEM PRÉVIA gerada, NÃO cria cobrança.
-    // Impede o cenário "pago sem música" de raiz — se a música/prévia não existe,
-    // não há como pagar. Vale pra Woovi E AbacatePay (antes das duas branches).
-    const _ord = await supaFetch('GET', `orders?id=eq.${orderId}&select=preview_audio_url,status,paid_at,utm_content`);
+    // 🔒 Carrega o pedido — inclui a VARIANTE DE PREÇO fixada nele (fonte da
+    // verdade). Também é a trava "sem prévia = sem pagamento" (evita pago-sem-música).
+    const _ord = await supaFetch('GET', `orders?id=eq.${orderId}&select=preview_audio_url,status,paid_at,price_variant`);
     const _oo = Array.isArray(_ord) && _ord[0];
     if (!_oo) return res.status(404).json({ error: 'pedido nao encontrado' });
 
-    // Persistência do variant do teste A/B (não-breaking): grava no utm_content
-    // SÓ se estiver vazio (não sobrescreve UTM real de anúncio). Vai junto no patch.
-    const variantPatch = (variant && !_oo.utm_content) ? { utm_content: `price_variant:${variant}` } : {};
-    if (variant) console.log('[/api/pay/create] price A/B variant:', variant, 'plan:', plan, 'order:', orderId);
+    // 🔒 PLANO/PREÇO derivado do PEDIDO, NUNCA do cliente. Se a variante de teste
+    // está fixada no pedido, FORÇA o plano dela (o cliente vê e paga sempre o
+    // MESMO preço, em qualquer device). Control usa o plano escolhido. O valor
+    // SEMPRE sai de PAY_PLANS[plan].cents (allowlist server-side).
+    const variant = ['control', 'p37', 'p47', 'p67'].includes(_oo.price_variant) ? _oo.price_variant : null;
+    const TEST_PLAN = { p37: 'test37', p47: 'test47', p67: 'test67' };
+    const plan = TEST_PLAN[variant] || (['musica', 'completa'].includes(clientPlan) ? clientPlan : 'musica');
+    const p = PAY_PLANS[plan];
+    if (!p) return res.status(400).json({ error: 'plano invalido' });
+    const cents = p.cents;
+    const variantPatch = {}; // variante já persistida no pedido (price_variant)
+    if (variant) console.log('[/api/pay/create] variante do pedido:', variant, '→ plano:', plan, 'order:', orderId);
     if (!_oo.preview_audio_url) {
       console.warn('[/api/pay/create] BLOQUEADO sem prévia — order', orderId, 'status', _oo.status);
       return res.status(409).json({ error: 'sem_previa', message: 'A prévia da sua música ainda não ficou pronta — não dá pra pagar ainda. Aguarde uns minutinhos ou fale com a gente 💛' });

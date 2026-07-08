@@ -23,7 +23,7 @@ const router = express.Router();
 // Telefone: variantes com/sem 55 e com/sem 9. E-mail: match exato (case-insensitive).
 router.get('/api/order/lookup', async (req, res) => {
   try {
-    const cols = 'id,status,honoree_name,customer_name,phone,preview_audio_url,original_audio_url,full_audio_urls,video_brinde_url,paid_at,created_at,prev_audio_urls,self_edit_used,edit_status';
+    const cols = 'id,status,honoree_name,customer_name,phone,preview_audio_url,original_audio_url,full_audio_urls,video_brinde_url,paid_at,created_at,prev_audio_urls,self_edit_used,edit_status,price_variant';
 
     // Dedup por HOMENAGEADO preferindo o MELHOR pedido (bug de duplicação do
     // frontend cria vários pedidos iguais). Rank: pago > tem música > tem prévia
@@ -147,7 +147,7 @@ router.get('/api/order/:id/status', async (req, res) => {
   try {
     const id = req.params.id;
     if (!_isUuid(id)) return res.status(400).json({ error: 'id invalido' });
-    const cols = 'status,preview_audio_url,original_audio_url,full_audio_urls,client_contacted_at,error_message,final_lyrics,video_brinde_url,video_upsell_status,honoree_name,customer_name,phone,paid_at,plan,story,genre,mood,occasion,voice_preference,relationship,style_raw,prev_audio_urls,self_edit_used,lyric_regen_count,edit_status';
+    const cols = 'status,preview_audio_url,original_audio_url,full_audio_urls,client_contacted_at,error_message,final_lyrics,video_brinde_url,video_upsell_status,honoree_name,customer_name,phone,paid_at,plan,story,genre,mood,occasion,voice_preference,relationship,style_raw,prev_audio_urls,self_edit_used,lyric_regen_count,edit_status,price_variant';
     const rows = await supaFetch('GET', `orders?id=eq.${id}&select=${cols}`);
     if (!Array.isArray(rows) || !rows[0]) return res.status(404).json({ error: 'nao encontrado' });
     res.json(rows[0]);
