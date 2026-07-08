@@ -15,8 +15,29 @@ const axios = require('axios');  // axios indireto via lib/, mas mantido pra fut
 
 const { supaFetch } = require('../lib/supabase');
 const { sendPurchaseToMeta } = require('../lib/metaCapi');
+const { sendSunoOutageEmail } = require('../lib/emailDelivery');
 
 const router = express.Router();
+
+// ═══ DETECTOR DE QUEDA DA SUNOAPI ═══
+// Conta falhas de geração numa janela curta. Se >= SUNO_BURST_COUNT (4) falhas
+// em < SUNO_BURST_WINDOW_SEC (180s) → a sunoapi caiu → e-mail pro dono (dedup
+// 20min). Substitui o sinal que o throttle de 20min do alerta de prévia perdeu.
+const _sunoFail = { times: [], lastAlert: 0 };
+function _recordSunoFailure() {
+  const now = Date.now();
+  const win = parseInt(process.env.SUNO_BURST_WINDOW_SEC || '180', 10) * 1000;
+  const need = parseInt(process.env.SUNO_BURST_COUNT || '4', 10);
+  const dedup = parseInt(process.env.SUNO_BURST_DEDUP_MIN || '20', 10) * 60000;
+  _sunoFail.times = _sunoFail.times.filter(t => now - t < win);
+  _sunoFail.times.push(now);
+  if (_sunoFail.times.length >= need && now - _sunoFail.lastAlert > dedup) {
+    _sunoFail.lastAlert = now;
+    const count = _sunoFail.times.length;
+    console.log(`[sunoOutage] 🔴 ${count} falhas de geração em <${win / 1000}s — disparando alerta`);
+    sendSunoOutageEmail({ count, windowSec: Math.round(win / 1000) }).catch(e => console.error('[sunoOutage] envio falhou:', e.message));
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SUNOAPI WEBHOOK — sunoapi.org notifica quando a musica fica pronta.
@@ -35,6 +56,11 @@ router.post('/api/webhooks/sunoapi', express.json({ limit: '2mb' }), async (req,
     const code = body.code;
     const tracks = Array.isArray(body.data?.data) ? body.data.data : [];
     console.log(`[sunoapi/webhook] type=${callbackType} code=${code} task=${taskId?.slice(0,12)} tracks=${tracks.length}`);
+
+    // Falha de geração = 'error' OU 'complete' sem sucesso (code!=200 ou 0 tracks).
+    // Ex. do apagão 08/jul: type=complete code=400 tracks=0. Alimenta o detector.
+    const _isFail = callbackType === 'error' || (callbackType === 'complete' && (code !== 200 || tracks.length === 0));
+    if (_isFail) _recordSunoFailure();
 
     if (!taskId) return;
 
