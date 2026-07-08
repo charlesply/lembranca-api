@@ -49,18 +49,28 @@ const ABACATEPAY_API = 'https://api.abacatepay.com/v2';
 router.post('/api/pay/create', async (req, res) => {
   let abacateAttempted = false; // p/ opsMonitor: só registra outcome se chegou a chamar a AbacatePay
   try {
-    const { orderId, plan } = req.body || {};
+    const { orderId, plan, priceVariant } = req.body || {};
     if (!_isUuid(orderId)) return res.status(400).json({ error: 'orderId invalido' });
+    // 🔒 ALLOWLIST SERVER-SIDE: valor SEMPRE derivado do planKey aqui (nunca do cliente).
+    // plano fora do PAY_PLANS → 400. Test plans entregam como `musica` (sem video).
     const p = PAY_PLANS[plan];
     if (!p) return res.status(400).json({ error: 'plano invalido' });
     const cents = p.cents;
+    // Teste A/B de preço — só aceita rótulos conhecidos (defensivo). Persistido
+    // abaixo p/ medir conversão; se vier lixo, ignora.
+    const variant = ['control', 'p37', 'p47', 'p67'].includes(priceVariant) ? priceVariant : null;
 
     // 🔒 TRAVA ESTRUTURAL (fonte de verdade): SEM PRÉVIA gerada, NÃO cria cobrança.
     // Impede o cenário "pago sem música" de raiz — se a música/prévia não existe,
     // não há como pagar. Vale pra Woovi E AbacatePay (antes das duas branches).
-    const _ord = await supaFetch('GET', `orders?id=eq.${orderId}&select=preview_audio_url,status,paid_at`);
+    const _ord = await supaFetch('GET', `orders?id=eq.${orderId}&select=preview_audio_url,status,paid_at,utm_content`);
     const _oo = Array.isArray(_ord) && _ord[0];
     if (!_oo) return res.status(404).json({ error: 'pedido nao encontrado' });
+
+    // Persistência do variant do teste A/B (não-breaking): grava no utm_content
+    // SÓ se estiver vazio (não sobrescreve UTM real de anúncio). Vai junto no patch.
+    const variantPatch = (variant && !_oo.utm_content) ? { utm_content: `price_variant:${variant}` } : {};
+    if (variant) console.log('[/api/pay/create] price A/B variant:', variant, 'plan:', plan, 'order:', orderId);
     if (!_oo.preview_audio_url) {
       console.warn('[/api/pay/create] BLOQUEADO sem prévia — order', orderId, 'status', _oo.status);
       return res.status(409).json({ error: 'sem_previa', message: 'A prévia da sua música ainda não ficou pronta — não dá pra pagar ainda. Aguarde uns minutinhos ou fale com a gente 💛' });
@@ -88,6 +98,7 @@ router.post('/api/pay/create', async (req, res) => {
         payment_method: 'pix_woovi',
         payment_amount: cents / 100,
         plan,
+        ...variantPatch,
       };
       if (p.includes_video) patchPay.video_upsell_status = 'brinde_pending';
       try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (e) { console.error('[/api/pay/create woovi] patch err:', e.message); }
@@ -118,7 +129,7 @@ router.post('/api/pay/create', async (req, res) => {
         expiresIn: 60 * 60, // 1h
         description: p.name,
         externalId: extId,
-        metadata: { order_id: orderId, plan },
+        metadata: { order_id: orderId, plan, price_variant: variant || undefined },
       },
     }, {
       headers: { Authorization: `Bearer ${ABACATEPAY_API_KEY}`, 'Content-Type': 'application/json' },
@@ -145,6 +156,7 @@ router.post('/api/pay/create', async (req, res) => {
       payment_method: 'pix',
       payment_amount: cents / 100,
       plan,
+      ...variantPatch,
     };
     if (p.includes_video) patchPay.video_upsell_status = 'brinde_pending';
     try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (e) { console.error('[/api/pay/create] patch err:', e.message); }
