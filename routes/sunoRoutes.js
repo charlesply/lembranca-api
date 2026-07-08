@@ -64,7 +64,9 @@ router.get('/api/preview/:filename', async (req, res) => {
       if (o && src) {
         const title = decodeURIComponent(filename).replace(/_preview\.mp3$/i, '').replace(/_/g, ' ');
         console.log(`[Preview self-heal] regenerando ${filename} (order ${o.id})`);
-        await createPreviewFromUrl(src, o.id, title);
+        // outName=filename → recria EXATAMENTE o arquivo pedido (o nome já embute
+        // o orderId; sem isso o naming novo re-anexaria o id e nunca casaria → 404).
+        await createPreviewFromUrl(src, o.id, title, filename);
       }
     } catch (e) { _dbg.err = e.message; console.error('[Preview self-heal] falhou:', e.message); }
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Preview nao encontrado.', _dbg });
