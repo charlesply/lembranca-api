@@ -62,8 +62,8 @@ router.post('/api/pay/create', async (req, res) => {
     // está fixada no pedido, FORÇA o plano dela (o cliente vê e paga sempre o
     // MESMO preço, em qualquer device). Control usa o plano escolhido. O valor
     // SEMPRE sai de PAY_PLANS[plan].cents (allowlist server-side).
-    const variant = ['control', 'p37', 'p47', 'p67'].includes(_oo.price_variant) ? _oo.price_variant : null;
-    const TEST_PLAN = { p37: 'test37', p47: 'test47', p67: 'test67' };
+    const variant = ['control', 'p29', 'p37', 'p47', 'p67'].includes(_oo.price_variant) ? _oo.price_variant : null;
+    const TEST_PLAN = { p29: 'test29', p37: 'test37', p47: 'test47', p67: 'test67' };
     const plan = TEST_PLAN[variant] || (['musica', 'completa'].includes(clientPlan) ? clientPlan : 'musica');
     const p = PAY_PLANS[plan];
     if (!p) return res.status(400).json({ error: 'plano invalido' });
