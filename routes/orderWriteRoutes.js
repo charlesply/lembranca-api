@@ -55,17 +55,20 @@ router.post('/api/order', async (req, res) => {
 
     // Variante de PREÇO (teste A/B) fixada NO PEDIDO — fonte da verdade: o cliente
     // vê SEMPRE o mesmo preço (qualquer device / link do e-mail).
-    // TESTE ATIVO (09/jul): 50% control (19,90 música / 29,90 com vídeo) vs
-    // 50% p29 (botão único R$29,90, SÓ música, sem vídeo). Os testes 37/47/67
-    // foram ENCERRADOS — pedidos antigos seguem válidos, só não são mais sorteados.
+    // TESTE DEFINITIVO (09/jul 16:16Z): 34% control (19,90 música / 29,90 c/ vídeo)
+    // vs 33% p2990 (R$29,90 só música) vs 33% p2900 (R$29,00 só música). Objetivo:
+    // ver se 29,00 converte melhor que 29,90 (psicologia de preço). Testes antigos
+    // (p29/p37/p47/p67) encerrados — pedidos antigos seguem válidos, só não sorteados.
     const _drawVariant = () => {
-      return Math.random() < 0.5 ? 'control' : 'p29';
+      const r = Math.random();
+      if (r < 0.34) return 'control';
+      return r < 0.67 ? 'p2990' : 'p2900';
     };
     // QA no STAGING pode forçar a variante (?pv → forceVariant). Gated por
     // Origin/Referer — produção (app.lembrancacantada.com) NUNCA força preço.
     const _origin = String(req.headers.origin || req.headers.referer || '');
     const _fv = String(b.forceVariant || '');
-    const price_variant = (/staging\./i.test(_origin) && ['control', 'p29', 'p37', 'p47', 'p67'].includes(_fv))
+    const price_variant = (/staging\./i.test(_origin) && ['control', 'p2990', 'p2900', 'p29', 'p37', 'p47', 'p67'].includes(_fv))
       ? _fv : _drawVariant();
 
     const order = {
