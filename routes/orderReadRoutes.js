@@ -25,33 +25,18 @@ router.get('/api/order/lookup', async (req, res) => {
   try {
     const cols = 'id,status,honoree_name,customer_name,phone,preview_audio_url,original_audio_url,full_audio_urls,video_brinde_url,paid_at,created_at,prev_audio_urls,self_edit_used,edit_status,price_variant';
 
-    // Dedup por HOMENAGEADO preferindo o MELHOR pedido (bug de duplicação do
-    // frontend cria vários pedidos iguais). Rank: pago > tem música > tem prévia
-    // > resto; empate = mais recente. Assim o cliente vê a música PAGA, não uma
-    // prévia duplicada não-paga do mesmo homenageado.
+    // 🚫 SEM DEDUP POR HOMENAGEADO — É PROIBIDO. O dedup antigo ESCONDIA as
+    // prévias reais do cliente quando ele já tinha uma música paga do mesmo
+    // homenageado → cliente não achava (nem conseguia pagar) as outras músicas.
+    // NUNCA reintroduzir. Agora mostra TODOS os pedidos REAIS (pago OU com prévia
+    // OU com música pronta); só descarta rascunho VAZIO (ruído da duplicação do
+    // quiz). Ordena: pago/completo primeiro, depois mais recente.
     const _rank = (o) => o.paid_at ? 0
       : (Array.isArray(o.full_audio_urls) && o.full_audio_urls.filter(Boolean).length) ? 1
       : (o.preview_audio_url ? 2 : 3);
-    // 🚨 PAGO NUNCA É DEDUPADO. Se o cliente pagou 2x pro mesmo homenageado,
-    // são 2 músicas DIFERENTES que ele escolheu comprar — mostra TODAS.
-    // Dedup só vale pra rascunhos NÃO-pagos (ruído da duplicação do quiz), e
-    // ainda ignora rascunho de homenageado que já tem um pago.
-    const dedupByHonoree = (list) => {
-      const arr = list || [];
-      const paid = arr.filter(o => o.paid_at); // todos os pagos ficam
-      const paidHonorees = new Set(paid.map(o => String(o.honoree_name || '').trim().toLowerCase()));
-      const bestUnpaid = {};
-      for (const o of arr) {
-        if (o.paid_at) continue;
-        const k = String(o.honoree_name || '').trim().toLowerCase() || o.id;
-        if (paidHonorees.has(k)) continue; // já tem pago desse homenageado → não mostra rascunho solto
-        const cur = bestUnpaid[k];
-        if (!cur || _rank(o) < _rank(cur) || (_rank(o) === _rank(cur) && String(o.created_at) > String(cur.created_at))) bestUnpaid[k] = o;
-      }
-      // ordena: pago/completo primeiro, depois mais recente
-      return [...paid, ...Object.values(bestUnpaid)]
-        .sort((a, b) => (_rank(a) - _rank(b)) || String(b.created_at).localeCompare(String(a.created_at)));
-    };
+    const listReal = (list) => (list || [])
+      .filter(o => o.paid_at || o.preview_audio_url || (Array.isArray(o.full_audio_urls) && o.full_audio_urls.filter(Boolean).length))
+      .sort((a, b) => (_rank(a) - _rank(b)) || String(b.created_at).localeCompare(String(a.created_at)));
 
     // ── Busca por NÚMERO DO PEDIDO (#XXXXXXXX curto ou UUID completo) ──
     const orderQ = (req.query.order || '').toString().replace(/[^0-9a-fA-F]/g, '').toLowerCase();
@@ -77,7 +62,7 @@ router.get('/api/order/lookup', async (req, res) => {
     if (email) {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'email invalido' });
       const rows = await supaFetch('GET', `orders?customer_email=eq.${encodeURIComponent(email)}&select=${cols}&order=created_at.desc&limit=20`);
-      return res.json({ ok: true, orders: dedupByHonoree(Array.isArray(rows) ? rows : []).slice(0, 5) });
+      return res.json({ ok: true, orders: listReal(Array.isArray(rows) ? rows : []).slice(0, 12) });
     }
 
     // ── Busca por TELEFONE ──
@@ -102,8 +87,8 @@ router.get('/api/order/lookup', async (req, res) => {
       const rows = await supaFetch('GET', `orders?phone=eq.${v}&select=${cols}&order=created_at.desc&limit=15`);
       if (Array.isArray(rows)) for (const r of rows) byId[r.id] = r;
     }
-    // Dedup por homenageado (pago primeiro) → some as dupes; cliente vê a paga.
-    const orders = dedupByHonoree(Object.values(byId)).slice(0, 5);
+    // SEM dedup — mostra TODOS os pedidos reais do cliente (pago + todas as prévias).
+    const orders = listReal(Object.values(byId)).slice(0, 12);
     res.json({ ok: true, orders });
   } catch (e) {
     console.error('[/api/order/lookup] erro:', e.message);
