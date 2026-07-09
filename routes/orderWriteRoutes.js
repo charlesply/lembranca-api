@@ -53,6 +53,26 @@ router.post('/api/order', async (req, res) => {
     const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw);
     const customer_email = emailValid ? emailRaw : null;
 
+    // 🐞 IDEMPOTÊNCIA anti-duplicação (jul/2026): a MESMA geração às vezes chama
+    // POST /api/order 2x (double-submit do quiz) → criava pedidos DUPLICADOS
+    // (stub órfão + real; ~31% das gerações). Antes de inserir: se já existe um
+    // pedido do MESMO telefone + MESMO homenageado criado nos últimos 90s,
+    // devolve ELE em vez de criar outro. Janela curta pra não colar pedidos
+    // legítimos distintos. (Race de chamadas simultâneas ainda escapa — o grosso
+    // observado vem com 4-6s de diferença, que isto pega.)
+    if (phone) {
+      try {
+        const _since = new Date(Date.now() - 90 * 1000).toISOString();
+        const _recent = await supaFetch('GET', `orders?phone=eq.${phone}&created_at=gte.${encodeURIComponent(_since)}&select=id,honoree_name&order=created_at.desc&limit=6`);
+        const _h = honoree.trim().toLowerCase();
+        const _dup = Array.isArray(_recent) ? _recent.find(o => String(o.honoree_name || '').trim().toLowerCase() === _h) : null;
+        if (_dup && _dup.id) {
+          console.log('[/api/order] IDEMPOTENTE — devolvendo pedido recente', _dup.id, 'p/', phone, honoree);
+          return res.json({ ok: true, orderId: _dup.id, deduped: true });
+        }
+      } catch (e) { console.warn('[/api/order] dedup check falhou, seguindo criação:', e.message); }
+    }
+
     // Variante de PREÇO (teste A/B) fixada NO PEDIDO — fonte da verdade: o cliente
     // vê SEMPRE o mesmo preço (qualquer device / link do e-mail).
     // TESTE DEFINITIVO (09/jul 16:16Z): 34% control (19,90 música / 29,90 c/ vídeo)
