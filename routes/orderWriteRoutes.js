@@ -55,11 +55,12 @@ router.post('/api/order', async (req, res) => {
 
     // Variante de PREÇO (teste A/B) fixada NO PEDIDO — fonte da verdade: o cliente
     // vê SEMPRE o mesmo preço (qualquer device / link do e-mail). 50% control,
-    // 16,6% cada p37/p47/p67.
+    // 25% p37, 25% p47. (p67 SAIU do teste 08/jul — convertia mal, 0 pago em 45
+    // prévias; pedidos p67 antigos seguem válidos, só não é mais sorteado.)
     const _drawVariant = () => {
       const r = Math.random();
       if (r < 0.5) return 'control';
-      return ['p37', 'p47', 'p67'][Math.min(2, Math.floor(((r - 0.5) / 0.5) * 3))];
+      return r < 0.75 ? 'p37' : 'p47';
     };
     // QA no STAGING pode forçar a variante (?pv → forceVariant). Gated por
     // Origin/Referer — produção (app.lembrancacantada.com) NUNCA força preço.
