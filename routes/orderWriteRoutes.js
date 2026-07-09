@@ -59,11 +59,19 @@ router.post('/api/order', async (req, res) => {
     // vs 33% p2990 (R$29,90 só música) vs 33% p2900 (R$29,00 só música). Objetivo:
     // ver se 29,00 converte melhor que 29,90 (psicologia de preço). Testes antigos
     // (p29/p37/p47/p67) encerrados — pedidos antigos seguem válidos, só não sorteados.
-    const _drawVariant = () => {
-      const r = Math.random();
-      if (r < 0.34) return 'control';
-      return r < 0.67 ? 'p2990' : 'p2900';
+    //
+    // 🐞 DETERMINÍSTICO POR CLIENTE (email > phone): a MESMA pessoa pega SEMPRE a
+    // mesma variante. Antes era Math.random() por pedido → quando a mesma geração
+    // criava pedidos DUPLICADOS (bug conhecido), cada irmão sorteava um preço
+    // diferente e embaralhava checkout×e-mail (cliente via 29,00, e-mail vinha 29,90).
+    const _variantFromR = (r) => (r < 0.34 ? 'control' : r < 0.67 ? 'p2990' : 'p2900');
+    const _hashFrac = (s) => {
+      let h = 5381;
+      for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+      return (h % 100000) / 100000;
     };
+    const _seed = String(customer_email || phone || '').trim().toLowerCase();
+    const _drawVariant = () => _variantFromR(_seed ? _hashFrac(_seed) : Math.random());
     // QA no STAGING pode forçar a variante (?pv → forceVariant). Gated por
     // Origin/Referer — produção (app.lembrancacantada.com) NUNCA força preço.
     const _origin = String(req.headers.origin || req.headers.referer || '');
