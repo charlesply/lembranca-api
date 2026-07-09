@@ -89,6 +89,14 @@ router.post('/api/order/:id/edit/confirm', async (req, res) => {
     const lyrics = _clip(req.body?.lyrics || '', 6000);
     if (!lyrics.trim()) return res.status(400).json({ error: 'sem letra' });
     const fields = (req.body && typeof req.body.fields === 'object') ? req.body.fields : {};
+    // 🐞 FIX ritmo mudando sozinho (jul/2026): o ESTILO (ritmo/ocasião/voz) só
+    // pode ser alterado se o cliente escolheu ATIVAMENTE — o front sinaliza com
+    // `stylePicked:true`. Antes o confirm sempre gravava `fields.genre` (o form
+    // vinha pré-preenchido, às vezes com valor errado) → o `genre` do pedido era
+    // sobrescrito e o regenerateEditedSong montava a tag do Suno com o gênero
+    // trocado (ex.: Gospel → Sertanejo). Bundle antigo NÃO manda a flag → aqui a
+    // gente PRESERVA o estilo original (comportamento seguro por padrão).
+    const stylePicked = req.body?.stylePicked === true;
 
     // Snapshot das versões ATUAIS → prev_audio_urls. Preferimos montar do
     // suno_clip_ids como link PERMANENTE (cdn1) — assim as originais NÃO expiram
@@ -109,12 +117,16 @@ router.post('/api/order/:id/edit/confirm', async (req, res) => {
       edit_status: 'regenerating',
       edit_requested_at: new Date().toISOString(),
     };
-    // Persiste dados editados (se vieram) — a nova música reflete eles.
+    // Nome/história são edições de TEXTO que o cliente digita — seguras de aplicar.
     if (fields.honoree_name) patch.honoree_name = _clip(fields.honoree_name, 120);
     if (fields.story) patch.story = _clip(fields.story, 6000);
-    if (fields.genre) patch.genre = _clip(fields.genre, 80);
-    if (fields.occasion) patch.occasion = _clip(fields.occasion, 200);
-    if (fields.voice) patch.voice_preference = normVoice(fields.voice);
+    // Estilo (ritmo/ocasião/voz): SÓ altera se o cliente escolheu de propósito.
+    // Sem stylePicked, preserva o original → o ritmo nunca muda sozinho.
+    if (stylePicked) {
+      if (fields.genre) patch.genre = _clip(fields.genre, 80);
+      if (fields.occasion) patch.occasion = _clip(fields.occasion, 200);
+      if (fields.voice) patch.voice_preference = normVoice(fields.voice);
+    }
 
     await supaFetch('PATCH', `orders?id=eq.${id}`, patch);
 
