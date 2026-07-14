@@ -281,6 +281,86 @@ router.post('/api/webhooks/woovi', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ASAAS WEBHOOK — confirmação de pagamento PIX (conta própria LUPELIUS).
+//
+// A ASAAS manda POST { event, payment }. Pago = event PAYMENT_RECEIVED ou
+// PAYMENT_CONFIRMED. O orderId sai de payment.externalReference (formato
+// "{uuid}-{plan}" gravado em /api/pay/create). Pós-pagamento roda a MESMA
+// entrega do AbacatePay/Woovi (vídeo + notificação + email + Meta CAPI).
+//
+// Segurança: a ASAAS envia o token configurado no header `asaas-access-token`
+// (validado contra ASAAS_WEBHOOK_TOKEN). Se o env não estiver setado, aceita e
+// LOGA aviso. Configure no painel/API da ASAAS a URL:
+//   https://suno-api-novo.bvph.uk/api/webhooks/asaas
+// ═══════════════════════════════════════════════════════════════════════════
+router.post('/api/webhooks/asaas', async (req, res) => {
+  try {
+    const expected = process.env.ASAAS_WEBHOOK_TOKEN;
+    if (expected) {
+      const recv = req.headers['asaas-access-token'] || req.query.token;
+      if (recv !== expected) return res.status(401).json({ error: 'unauthorized' });
+    } else {
+      console.warn('[webhook asaas] ASAAS_WEBHOOK_TOKEN não setado — aceitando sem validar (setar pra fechar)');
+    }
+
+    const event = req.body?.event || '';
+    const payment = req.body?.payment || {};
+    // A ASAAS manda um POST de teste ao cadastrar o webhook — ACK sem processar.
+    if (!/PAYMENT_(RECEIVED|CONFIRMED)/i.test(event)) {
+      return res.json({ ok: true, ignored: event || 'no_event' });
+    }
+
+    const extRef = payment.externalReference || '';
+    const m = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(extRef);
+    const orderId = m?.[1];
+    console.log('[webhook asaas]', event, 'extRef=', extRef, 'paymentId=', payment.id, '→ orderId=', orderId);
+
+    // amarra por orderId (externalReference) ou, fallback, pelo id da cobrança
+    const filter = orderId ? `id=eq.${orderId}` : `abacate_charge_id=eq.${payment.id}`;
+    const rows = await supaFetch('GET', `orders?${filter}&select=id,status,plan`);
+    const o = rows?.[0];
+    if (!o) return res.json({ ok: true, found: false });
+    if (o.status === 'paid' || o.status === 'delivered') return res.json({ ok: true, already: true });
+
+    await supaFetch('PATCH', `orders?id=eq.${o.id}`, {
+      status: 'paid',
+      abacate_status: 'PAID',
+      paid_at: new Date().toISOString(),
+    });
+    console.log('[webhook asaas] order', o.id, 'PAID plan=', o.plan);
+
+    // ── mesma entrega do AbacatePay/Woovi (fire-and-forget) ──
+    if (require('../lib/payPlans').isVideoPlan(o.plan)) {
+      try { require('../lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
+    }
+    try { require('../lib/salesNotify').notifySale(o.id); } catch (e) { console.error('[salesNotify] init err:', e.message); }
+    try {
+      const emailRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,honoree_name,customer_name,customer_email,plan,original_audio_url,full_audio_urls,video_brinde_url,email_delivery_sent`);
+      const emailOrder = emailRows?.[0];
+      if (emailOrder && emailOrder.customer_email && !emailOrder.email_delivery_sent) {
+        require('../lib/emailDelivery').sendDeliveryEmail(emailOrder).catch(e => console.error('[webhook asaas] email delivery falhou (cron tenta de novo):', e.message));
+      }
+    } catch (e) { console.error('[webhook asaas] erro ao buscar pra email (ignorado):', e.message); }
+    try {
+      let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
+      if (!Array.isArray(fullRows) || !fullRows[0]) {
+        fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
+      }
+      const fullOrder = fullRows?.[0];
+      if (fullOrder && !fullOrder.meta_capi_sent) {
+        const result = await sendPurchaseToMeta(fullOrder);
+        if (result?.ok) await supaFetch('PATCH', `orders?id=eq.${o.id}`, { meta_capi_sent: true });
+      }
+    } catch (e) { console.error('[webhook asaas] CAPI falhou (ignorado):', e.message); }
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[webhook asaas] erro:', e.message);
+    res.status(500).json({ error: 'erro interno' });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // WEBHOOK Resend — atualiza promo_campaigns com eventos de email.
 //

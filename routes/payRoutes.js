@@ -18,6 +18,7 @@ const { supaFetch } = require('../lib/supabase');
 const { PAY_PLANS } = require('../lib/payPlans');
 const { isUuid: _isUuid } = require('../lib/validators');
 const { createWooviCharge, WOOVI_APP_ID } = require('../lib/woovi');
+const { createAsaasPixCharge, ASAAS_CUSTOMER_ID } = require('../lib/asaas');
 
 const router = express.Router();
 
@@ -75,10 +76,57 @@ router.post('/api/pay/create', async (req, res) => {
       return res.status(409).json({ error: 'sem_previa', message: 'A prévia da sua música ainda não ficou pronta — não dá pra pagar ainda. Aguarde uns minutinhos ou fale com a gente 💛' });
     }
 
+    // Provedor efetivo: normalmente PIX_PROVIDER (env). Override POR REQUEST só
+    // com token de teste (headers X-Pay-Test + X-Force-Provider) — permite validar
+    // um provedor novo em produção sem virar a chave global pra todos os clientes.
+    let useProvider = PIX_PROVIDER;
+    const _testTok = process.env.PAY_TEST_TOKEN || '';
+    const _forced = String(req.headers['x-force-provider'] || '').toLowerCase();
+    if (_testTok && req.headers['x-pay-test'] === _testTok && ['asaas', 'woovi', 'abacate'].includes(_forced)) {
+      useProvider = _forced;
+      console.log('[/api/pay/create] OVERRIDE de teste → provider:', useProvider, 'order:', orderId);
+    }
+
+    // ═══ ASAAS — PIX DIRETO (conta própria LUPELIUS, sem intermediário) ═══
+    // Mesma resposta shape (brCode + brCodeBase64=data-URI do QR) → frontend não muda.
+    // externalReference embute orderId+plan pro webhook amarrar o pedido.
+    if (useProvider === 'asaas') {
+      if (!ASAAS_CUSTOMER_ID) return res.status(503).json({ error: 'ASAAS nao configurado (ASAAS_CUSTOMER_ID)' });
+      let charge;
+      try {
+        charge = await createAsaasPixCharge({ orderId, valueCents: cents, description: p.name, externalReference: `${orderId}-${plan}` });
+      } catch (e) {
+        console.error('[/api/pay/create asaas] erro:', e.response?.data || e.message);
+        return res.status(502).json({ error: 'falha ao gerar PIX (asaas)', detail: String(e.response?.data?.errors?.[0]?.description || e.message) });
+      }
+      const patchPay = {
+        bill_id: charge.id,
+        abacate_charge_id: charge.id,
+        abacate_brcode: charge.brCode,
+        abacate_qrcode: charge.qrImageBase64,
+        abacate_status: 'PENDING',
+        payment_method: 'pix_asaas',
+        payment_amount: cents / 100,
+        plan,
+        ...variantPatch,
+      };
+      if (p.includes_video) patchPay.video_upsell_status = 'brinde_pending';
+      try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (e) { console.error('[/api/pay/create asaas] patch err:', e.message); }
+      console.log('[/api/pay/create] ASAAS PIX criado:', charge.id, 'p/', orderId, '(', cents, 'cents)');
+      return res.json({
+        ok: true,
+        paymentId: charge.id,
+        brCode: charge.brCode,
+        brCodeBase64: charge.qrImageBase64,
+        amount: cents,
+        expiresAt: charge.expiresAt,
+      });
+    }
+
     // ═══ WOOVI (ex-OpenPix) — provedor ativo quando PIX_PROVIDER=woovi ═══
     // Mesma resposta shape do AbacatePay (brCode + brCodeBase64=qrCodeImage URL)
     // → frontend não muda. correlationID embute orderId+plan pro webhook amarrar.
-    if (PIX_PROVIDER === 'woovi') {
+    if (useProvider === 'woovi') {
       if (!WOOVI_APP_ID) return res.status(503).json({ error: 'Woovi nao configurado (WOOVI_APP_ID)' });
       const correlationID = `${orderId}-${plan}-${Math.floor(Date.now() / 1000)}`;
       let charge;
