@@ -93,9 +93,21 @@ router.post('/api/order', async (req, res) => {
     const price_variant = (/staging\./i.test(_origin) && ['control', 'p2990', 'p2900', 'p29', 'p37', 'p47', 'p67'].includes(_fv))
       ? _fv : _drawVariant();
 
+    // ── TESTE A/B DE CHECKOUT (14/jul) — dimensão SEPARADA do preço ──
+    // A = checkout atual (sem CPF, PIX auto nos 0:50, provedor Woovi).
+    // B = caixa com CPF/CNPJ obrigatório (PIX só ao clicar "Pagar"), provedor ASAAS.
+    // Objetivo: medir o impacto do passo extra (CPF) na conversão antes de exigir
+    // CPF pra valer. Sorteio 50/50, FIXO no pedido (a dedup acima garante que um
+    // double-submit devolve o MESMO pedido → mesma variante, sem embaralhar).
+    // QA no STAGING força por ?cv (b.forceCheckout). Produção nunca força.
+    const _cv = String(b.forceCheckout || '').toUpperCase();
+    const checkout_variant = (/staging\./i.test(_origin) && ['A', 'B'].includes(_cv))
+      ? _cv : (Math.random() < 0.5 ? 'A' : 'B');
+
     const order = {
       phone,
       price_variant,
+      checkout_variant,
       ...(customer_email ? { customer_email } : {}),
       honoree_name: _clip(honoree, 120),
       customer_name: _clip(b.customer_name || b.clientName, 120),
