@@ -148,6 +148,10 @@ router.post('/api/pay/create', async (req, res) => {
       // cria (ou reusa) um cliente ASAAS REAL com o documento do pagador.
       if (isVariantB) {
         doc = onlyDigits(req.body?.cpf || req.body?.cpfCnpj || '');
+        // Sem CPF ainda → pede a caixa (o front mostra o CheckoutCpfBox). Não é erro.
+        if (!doc) {
+          return res.json({ ok: true, needs_cpf: true, prefilled_email: _oo.customer_email || null, honoree: _oo.honoree_name || null });
+        }
         if (!isValidCpfCnpj(doc)) return res.status(400).json({ error: 'cpf_invalido', message: 'CPF/CNPJ inválido — confira os números 💛' });
         if (!asaasCustomerId) {
           try {
