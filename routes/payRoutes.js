@@ -56,7 +56,7 @@ router.post('/api/pay/create', async (req, res) => {
 
     // 🔒 Carrega o pedido — inclui a VARIANTE DE PREÇO fixada nele (fonte da
     // verdade). Também é a trava "sem prévia = sem pagamento" (evita pago-sem-música).
-    const _ord = await supaFetch('GET', `orders?id=eq.${orderId}&select=preview_audio_url,status,paid_at,price_variant,checkout_variant,customer_email,customer_name,honoree_name,phone,asaas_customer_id`);
+    const _ord = await supaFetch('GET', `orders?id=eq.${orderId}&select=preview_audio_url,stream_preview_url,status,paid_at,price_variant,checkout_variant,customer_email,customer_name,honoree_name,phone,asaas_customer_id`);
     const _oo = Array.isArray(_ord) && _ord[0];
     if (!_oo) return res.status(404).json({ error: 'pedido nao encontrado' });
 
@@ -72,8 +72,13 @@ router.post('/api/pay/create', async (req, res) => {
     const cents = p.cents;
     const variantPatch = {}; // variante já persistida no pedido (price_variant)
     if (variant) console.log('[/api/pay/create] variante do pedido:', variant, '→ plano:', plan, 'order:', orderId);
-    if (!_oo.preview_audio_url) {
-      console.warn('[/api/pay/create] BLOQUEADO sem prévia — order', orderId, 'status', _oo.status);
+    // Trava "sem prévia = sem pagamento" (anti pago-sem-música). Se o cliente
+    // JÁ CONSEGUE OUVIR a prévia — seja o corte final (preview_audio_url) OU o
+    // stream ao vivo (stream_preview_url, fase "first" do Suno) — ele PODE pagar.
+    // Só barra se NÃO houver prévia nenhuma (sunoapi falhou de fato). A música
+    // completa a geração em segundos e a entrega é pós-pagamento (assíncrona).
+    if (!_oo.preview_audio_url && !_oo.stream_preview_url) {
+      console.warn('[/api/pay/create] BLOQUEADO sem prévia (nem corte nem stream) — order', orderId, 'status', _oo.status);
       return res.status(409).json({ error: 'sem_previa', message: 'A prévia da sua música ainda não ficou pronta — não dá pra pagar ainda. Aguarde uns minutinhos ou fale com a gente 💛' });
     }
 
