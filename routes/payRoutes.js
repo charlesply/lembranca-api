@@ -146,30 +146,26 @@ router.post('/api/pay/create', async (req, res) => {
     // externalReference embute orderId+plan pro webhook amarrar o pedido.
     if (useProvider === 'asaas') {
       if (!ASAAS_CUSTOMER_ID) return res.status(503).json({ error: 'ASAAS nao configurado (ASAAS_CUSTOMER_ID)' });
-      const isVariantB = _oo.checkout_variant === 'B';
       let asaasCustomerId = _oo.asaas_customer_id || null;
-      let doc = null;
-      // Variante B: CPF/CNPJ OBRIGATÓRIO e válido (backend = fonte da verdade) e
-      // cria (ou reusa) um cliente ASAAS REAL com o documento do pagador.
-      if (isVariantB) {
-        doc = onlyDigits(req.body?.cpf || req.body?.cpfCnpj || '');
-        // Sem CPF ainda → pede a caixa (o front mostra o CheckoutCpfBox). Não é erro.
-        if (!doc) {
-          return res.json({ ok: true, needs_cpf: true, prefilled_email: _oo.customer_email || null, honoree: _oo.honoree_name || null });
-        }
-        if (!isValidCpfCnpj(doc)) return res.status(400).json({ error: 'cpf_invalido', message: 'CPF/CNPJ inválido — confira os números 💛' });
-        if (!asaasCustomerId) {
-          try {
-            asaasCustomerId = await createAsaasCustomer({
-              name: _oo.customer_name || _oo.honoree_name || 'Cliente',
-              cpfCnpj: doc,
-              email: emailForCheckout || _oo.customer_email,
-              phone: _oo.phone,
-            });
-          } catch (e) {
-            console.error('[/api/pay/create asaas] createCustomer falhou → fallback Woovi:', e.response?.data || e.message);
-            return await payWithWoovi();
-          }
+      // CPF/CNPJ OBRIGATÓRIO pra TODOS (17/jul: 100% ASAAS + CPF pra nota fiscal).
+      // backend = fonte da verdade; cria (ou reusa) um cliente ASAAS REAL com o doc.
+      let doc = onlyDigits(req.body?.cpf || req.body?.cpfCnpj || '');
+      // Sem CPF ainda → pede a caixa (o front mostra o CheckoutCpfBox). Não é erro.
+      if (!doc) {
+        return res.json({ ok: true, needs_cpf: true, prefilled_email: _oo.customer_email || null, honoree: _oo.honoree_name || null });
+      }
+      if (!isValidCpfCnpj(doc)) return res.status(400).json({ error: 'cpf_invalido', message: 'CPF/CNPJ inválido — confira os números 💛' });
+      if (!asaasCustomerId) {
+        try {
+          asaasCustomerId = await createAsaasCustomer({
+            name: _oo.customer_name || _oo.honoree_name || 'Cliente',
+            cpfCnpj: doc,
+            email: emailForCheckout || _oo.customer_email,
+            phone: _oo.phone,
+          });
+        } catch (e) {
+          console.error('[/api/pay/create asaas] createCustomer falhou → fallback Woovi:', e.response?.data || e.message);
+          return await payWithWoovi();
         }
       }
       let charge;
@@ -196,7 +192,7 @@ router.post('/api/pay/create', async (req, res) => {
       if (emailForCheckout && emailForCheckout !== _oo.customer_email) patchPay.checkout_email = emailForCheckout;
       if (p.includes_video) patchPay.video_upsell_status = 'brinde_pending';
       try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (e) { console.error('[/api/pay/create asaas] patch err:', e.message); }
-      console.log('[/api/pay/create] ASAAS PIX criado:', charge.id, 'p/', orderId, '(', cents, 'cents)', isVariantB ? '[B/cpf]' : '');
+      console.log('[/api/pay/create] ASAAS PIX criado:', charge.id, 'p/', orderId, '(', cents, 'cents)', '[cpf]');
       return res.json({
         ok: true,
         paymentId: charge.id,
