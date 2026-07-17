@@ -625,25 +625,24 @@ const generateSong = inngest.createFunction(
       });
     }
 
-    // ═══ STEP 4: Audio-Edit preview ═══
-    const previewUrl = await step.run('audio-edit-preview', async () => {
-      const songTitle = bestClip.title || d.title || (d.honoreeName ? `Para ${d.honoreeName}` : 'Musica');
-      const preview = await createPreviewFromUrl(bestClip.audio_url, d.orderId || undefined, songTitle);
-      // NÃO grava no Storage (prévia é descartável). A rota /api/preview AUTO-CURA:
-      // se o arquivo sumir (redeploy), regenera na hora do link permanente da Suno.
-      const url = `${SELF_URL}/api/preview/${encodeURIComponent(preview.previewFilename)}`;
-      console.log(`[Inngest/Preview] ✅ Preview: ${url}`);
-      return url;
-    });
+    // ═══ STEP 4: Prévia = URL PERMANENTE da música inteira (SEM corte 0:50) ═══
+    // Decisão do dono (17/jul): larga o arquivo cortado. A prévia é a PRÓPRIA
+    // música (link permanente cdn1.suno.ai/{id}.mp3), e o teto de 0:50 é feito
+    // no PLAYER (client-side) em toda tela de prévia NÃO-paga. Vantagem: entrega
+    // instantânea (sem passo de ffmpeg) e preview_audio_url nunca fica sem link.
+    const previewUrl = clipCdnUrl(bestClip.id) || bestClip.audio_url;
+    console.log(`[Inngest/Preview] ✅ Prévia = full permanente: ${(previewUrl || '').substring(0, 60)}...`);
 
     // ═══ STEP 5: Atualizar Supabase → preview_sent ═══
     await step.run('supabase-mark-preview-sent', async () => {
       if (!d.orderId) return;
       // ANTI-DUPLICATA: se o pedido foi CANCELADO/supersedido enquanto a run rodava
       // (ex: re-disparo manual criou outro pedido p/ o mesmo cliente), NÃO entrega.
+      let cur0;
       try {
-        const cur = await supaFetch('GET', `orders?id=eq.${d.orderId}&select=status`);
-        if (cur && cur[0] && cur[0].status === 'cancelled') {
+        const cur = await supaFetch('GET', `orders?id=eq.${d.orderId}&select=status,paid_at,plan,customer_email,email_delivery_sent`);
+        cur0 = cur && cur[0];
+        if (cur0 && cur0.status === 'cancelled') {
           console.log(`[Inngest] ⏭️ order=${d.orderId} cancelado — pulando entrega (anti-duplicata)`);
           return { skipped: 'cancelled' };
         }
@@ -655,13 +654,39 @@ const generateSong = inngest.createFunction(
           return { skipped: 'autosend_cancelled' };
         }
       } catch (e) {}
-      await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
-        status: 'preview_sent',
+
+      // Se o cliente JÁ PAGOU (durante o streaming, agora que o gate permite),
+      // NÃO regride o status pra preview_sent — senão perde o 'paid'/'delivered'.
+      // Só preenche a prévia (que agora é a música completa capada no player).
+      const alreadyPaid = !!(cur0 && (cur0.paid_at || ['paid', 'delivered'].includes(cur0.status)));
+      const patch = {
         preview_audio_url: previewUrl,
-        stream_preview_url: null, // corte seguro 0:50 pronto → some a URL do stream ao vivo (música inteira)
+        stream_preview_url: null, // música completa pronta → some a URL do stream ao vivo
         error_message: null, // limpa erros anteriores
-      });
-      console.log(`[Inngest] ✅ preview_sent! order=${d.orderId}`);
+      };
+      if (!alreadyPaid) patch.status = 'preview_sent';
+      await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, patch);
+      console.log(`[Inngest] ✅ ${alreadyPaid ? 'música pronta (já PAGO — status mantido)' : 'preview_sent'}! order=${d.orderId}`);
+
+      // ═══ ENTREGA IMEDIATA se pagou ANTES de completar ═══
+      // A música ficou pronta AGORA e o cliente já pagou → entrega na HORA
+      // (e-mail transacional + vídeo se plano com vídeo), sem esperar o cron
+      // emailDeliveryMonitor. Idempotente: sendDeliveryEmail respeita
+      // email_delivery_sent + o guard de mídia; generateBrindeForOrder é no-op
+      // se já houver job. Como não cortamos mais, a música fica pronta rápido.
+      if (alreadyPaid) {
+        try {
+          if (require('../../lib/payPlans').isVideoPlan(cur0.plan)) {
+            try { require('../../lib/brindeVideo').generateBrindeForOrder(d.orderId); } catch (_) {}
+          }
+          const emailRows = await supaFetch('GET', `orders?id=eq.${d.orderId}&select=id,honoree_name,customer_name,customer_email,plan,original_audio_url,full_audio_urls,video_brinde_url,email_delivery_sent,checkout_email`);
+          const emailOrder = emailRows && emailRows[0];
+          if (emailOrder && emailOrder.customer_email && !emailOrder.email_delivery_sent) {
+            const r = await require('../../lib/emailDelivery').sendDeliveryEmail(emailOrder);
+            console.log(`[Inngest] 📧 Entrega imediata pós-complete (pré-pago) order=${d.orderId}: ${JSON.stringify(r)}`);
+          }
+        } catch (e) { console.error('[Inngest] entrega imediata falhou (cron emailDeliveryMonitor cobre):', e.message); }
+      }
 
       // VIDEO NAO E PRE-GERADO mais. Antes (10-13/jun) gerava logo apos a musica
       // pra entregar instantaneo no pagamento — mas isso entupia a fila do
