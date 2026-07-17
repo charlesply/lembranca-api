@@ -85,13 +85,14 @@ const regenerateEditedSong = inngest.createFunction(
     const style = _tagParts.join(', ') || _genre;
 
     // ═══ STEP 2: submete pro Suno (customMode, letra confirmada) ═══
-    const submitRef = await step.run('suno-submit-edit', async () => {
-      const fallbackArgs = {
-        prompt: lyrics, tags: style, title, model: d.model,
-        make_instrumental: false,
-        vocal_gender: vocalGender === 'm' ? 'male' : vocalGender === 'f' ? 'female' : undefined,
-        wait_audio: false,
-      };
+    // fallbackArgs no ESCOPO DA FUNÇÃO pra o auto-resubmit (poll abaixo) enxergar.
+    const fallbackArgs = {
+      prompt: lyrics, tags: style, title, model: d.model,
+      make_instrumental: false,
+      vocal_gender: vocalGender === 'm' ? 'male' : vocalGender === 'f' ? 'female' : undefined,
+      wait_audio: false,
+    };
+    let submitRef = await step.run('suno-submit-edit', async () => {
       let result;
       try {
         result = await sunoProvider.submit({ prompt: lyrics, style, title, instrumental: false, vocalGender, fallbackArgs });
@@ -110,6 +111,8 @@ const regenerateEditedSong = inngest.createFunction(
     // Sem fases/auto-retry como a generateSong — feature de baixo volume, mais
     // simples. Aceita quando ambos os clips terminam, ou o que tiver após ~6min.
     let completed = null;
+    let resubmits = 0;
+    const MAX_EDIT_RESUBMITS = 2; // re-submete no FAILED do Suno (moderação/hiccup transitório ~1-2%)
     const ATTEMPTS = 45;
     for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
       if (attempt > 0) {
@@ -123,7 +126,21 @@ const regenerateEditedSong = inngest.createFunction(
       });
       const done = poll.tracks.filter(t => t.status === 'complete' && t.audio_url);
       if (poll.status === 'FAILED' && !done.length) {
-        throw new Error('Suno retornou FAILED sem clips'); // deixa retry / onFailure
+        // 🐞 FIX (17/jul): o Suno falha transitório (~1-2%, moderação/hiccup) e o
+        // self-edit quebrava DE VEZ na 1ª falha → cliente via a versão ANTIGA
+        // (caso Renata: escolheu Infantil, veio o Sertanejo velho). Igual o
+        // generateSong: RE-SUBMETE até MAX_EDIT_RESUBMITS antes de desistir.
+        if (submitRef.provider === 'api' && resubmits < MAX_EDIT_RESUBMITS) {
+          resubmits++;
+          submitRef = await step.run(`edit-resubmit-${resubmits}`, async () => {
+            console.log(`[EditRegen] 🔄 Suno FAILED — re-submetendo ${resubmits}/${MAX_EDIT_RESUBMITS} order=${orderId}`);
+            const r = await sunoProvider.submit({ prompt: lyrics, style, title, instrumental: false, vocalGender, fallbackArgs });
+            if (r.provider === 'api') { try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, { suno_task_id: r.taskId }); } catch (_) {} }
+            return { provider: r.provider, taskId: r.taskId || null, clipIds: r.clipIds || null };
+          });
+          continue; // segue o poll no taskId NOVO
+        }
+        throw new Error('Suno retornou FAILED sem clips'); // esgotou re-submits → onFailure marca edit_error
       }
       // ambos prontos → fecha; ou aceita parcial após ~6min (attempt>=12) com >=1
       if (poll.allDone && done.length) { completed = done; break; }
