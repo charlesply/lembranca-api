@@ -382,6 +382,7 @@ const generateSong = inngest.createFunction(
     // Lógica: Inngest "congela" o job durante step.sleep — zero CPU/memória.
     // Cliente fica esperando mas SEM gastar créditos Suno extras.
     let completedClips = null;
+    let streamPreviewSet = false;  // prévia em streaming já gravada? (idempotência local)
     const POLL_ATTEMPTS = 51;  // 36 fast + 10 medium + 5 slow
     const PHASE_BOUNDARY_MEDIUM = 36;
     const PHASE_BOUNDARY_SLOW = 46;
@@ -440,6 +441,35 @@ const generateSong = inngest.createFunction(
         return { tracks: s.tracks, globalStatus: s.status };
       });
       const polledClips = pollResult.tracks;
+
+      // ═══ PRÉVIA EM STREAMING (fase "first" da sunoapi.org) ═══
+      // Assim que a sunoapi.org expõe o buffer AO VIVO (streamAudioUrl → mapeado
+      // pra status 'streaming' no sunoProvider, ~15-30s), gravamos UMA vez em
+      // stream_preview_url. O app já joga o cliente pra prévia tocando na hora
+      // (o player corta em 0:50). NÃO mexemos em preview_audio_url — esse continua
+      // sendo o CORTE FÍSICO 0:50 seguro, setado só no complete (STEP 4/5). Assim
+      // as telas de pagamento/entrega (que tocam preview_audio_url cru) nunca
+      // recebem a URL da música inteira. A troca no complete não interrompe a
+      // escuta: o front congela a fonte que já está tocando (first-write-wins).
+      if (d.orderId && !streamPreviewSet) {
+        const streamClip = polledClips.find(c => c.status === 'streaming' && c.audio_url);
+        if (streamClip) {
+          streamPreviewSet = await step.run(`set-stream-preview-${attempt}`, async () => {
+            // idempotente: só grava se ainda vazio e o pedido não avançou/cancelou
+            const rows = await supaFetch('GET', `orders?id=eq.${d.orderId}&select=stream_preview_url,status`);
+            const cur = rows && rows[0];
+            if (!cur || cur.stream_preview_url
+                || ['preview_sent', 'paid', 'delivered', 'cancelled'].includes(cur.status)) {
+              return true;
+            }
+            await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
+              stream_preview_url: streamClip.audio_url,
+            });
+            console.log(`[Inngest] ⚡ stream_preview_url setado (fase first) order=${d.orderId}`);
+            return true;
+          });
+        }
+      }
 
       // ═══ AUTO-RETRY em GENERATE_AUDIO_FAILED (contador persistido) ═══
       // SUNOAPI falha intermitentemente com "Internal Error". Em vez de esperar 2h,
@@ -628,6 +658,7 @@ const generateSong = inngest.createFunction(
       await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
         status: 'preview_sent',
         preview_audio_url: previewUrl,
+        stream_preview_url: null, // corte seguro 0:50 pronto → some a URL do stream ao vivo (música inteira)
         error_message: null, // limpa erros anteriores
       });
       console.log(`[Inngest] ✅ preview_sent! order=${d.orderId}`);
