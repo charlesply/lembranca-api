@@ -165,6 +165,7 @@ router.post('/api/pay/create', async (req, res) => {
           });
         } catch (e) {
           console.error('[/api/pay/create asaas] createCustomer falhou → fallback Woovi:', e.response?.data || e.message);
+          try { require('../lib/opsMonitor').recordAsaasOutcome(false); } catch (_) {}
           return await payWithWoovi();
         }
       }
@@ -174,8 +175,11 @@ router.post('/api/pay/create', async (req, res) => {
       } catch (e) {
         // Fallback: ASAAS bloqueou (WAF/403) ou falhou → gera Woovi na hora.
         console.error('[/api/pay/create asaas] erro → fallback Woovi:', e.response?.data || e.message);
+        try { require('../lib/opsMonitor').recordAsaasOutcome(false); } catch (_) {}
         return await payWithWoovi();
       }
+      // ASAAS gerou o PIX com sucesso — registra pro monitor de fallback.
+      try { require('../lib/opsMonitor').recordAsaasOutcome(true); } catch (_) {}
       const patchPay = {
         bill_id: charge.id,
         abacate_charge_id: charge.id,
