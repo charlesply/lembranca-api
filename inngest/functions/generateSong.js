@@ -664,9 +664,13 @@ const generateSong = inngest.createFunction(
         stream_preview_url: null, // música completa pronta → some a URL do stream ao vivo
         error_message: null, // limpa erros anteriores
       };
+      // Status: não-pago → preview_sent. JÁ PAGO → 'paid' (o save-original acima
+      // poe 'generating'; se não restaurar, o pedido pago fica preso em generating).
+      // Não regride 'delivered'.
       if (!alreadyPaid) patch.status = 'preview_sent';
+      else if (cur0 && cur0.status !== 'delivered') patch.status = 'paid';
       await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, patch);
-      console.log(`[Inngest] ✅ ${alreadyPaid ? 'música pronta (já PAGO — status mantido)' : 'preview_sent'}! order=${d.orderId}`);
+      console.log(`[Inngest] ✅ ${alreadyPaid ? 'música pronta (já PAGO → status=paid)' : 'preview_sent'}! order=${d.orderId}`);
 
       // ═══ ENTREGA IMEDIATA se pagou ANTES de completar ═══
       // A música ficou pronta AGORA e o cliente já pagou → entrega na HORA
