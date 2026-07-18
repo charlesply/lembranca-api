@@ -182,4 +182,27 @@ router.post('/api/read_receipt', async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// POST /api/admin/apology-preview — e-mail de DESCULPA (prévia pronta) pra UMA
+// order. Protegido por token (PAY_TEST_TOKEN). Usado na recuperação de queda.
+// Só manda se a prévia JÁ existe e não está paga (não incomoda quem já pagou).
+router.post('/api/admin/apology-preview', async (req, res) => {
+  try {
+    const token = req.query.token || req.body?.token || req.headers['x-admin-token'];
+    if (!process.env.PAY_TEST_TOKEN || token !== process.env.PAY_TEST_TOKEN) return res.status(401).json({ error: 'unauthorized' });
+    const orderId = req.query.orderId || req.body?.orderId;
+    if (!orderId) return res.status(400).json({ error: 'orderId obrigatório' });
+    const rows = await supaFetch('GET', `orders?id=eq.${orderId}&select=id,honoree_name,customer_name,customer_email,preview_audio_url,paid_at`);
+    const o = rows && rows[0];
+    if (!o) return res.status(404).json({ error: 'nao encontrado' });
+    if (!o.customer_email) return res.json({ ok: false, skipped: 'no_email' });
+    if (o.paid_at) return res.json({ ok: false, skipped: 'ja_pago' });
+    if (!o.preview_audio_url) return res.json({ ok: false, skipped: 'sem_previa' });
+    const r = await require('../lib/emailDelivery').sendApologyPreviewEmail(o);
+    res.json(r);
+  } catch (e) {
+    console.error('[/api/admin/apology-preview]', e.message);
+    res.status(500).json({ error: 'erro interno' });
+  }
+});
+
 module.exports = router;
