@@ -244,6 +244,7 @@ const generateSong = inngest.createFunction(
             vocalGender,
             negativeTags: d.negative_tags || undefined,
             fallbackArgs,
+            orderId: d.orderId,   // A/B sunoapi × apipass é sorteado por orderId
           });
         } catch (err) {
           const status = err.response?.status;
@@ -273,8 +274,8 @@ const generateSong = inngest.createFunction(
           throw err;
         }
 
-        if (result.provider === 'api') {
-          console.log(`[Inngest] ✅ submit via API (taskId=${result.taskId}, model=${result.model})`);
+        if (result.taskId) {
+          console.log(`[Inngest] ✅ submit via ${result.provider} (taskId=${result.taskId}, model=${result.model}, assigned=${result.assigned}${result.fellBack ? ', CROSS-FALLBACK' : ''})`);
         } else {
           console.log(`[Inngest] ✅ submit via cookie (clips=${result.clipIds.join(', ')})`);
         }
@@ -284,8 +285,10 @@ const generateSong = inngest.createFunction(
             status: 'generating',
             suno_provider: result.provider,
           };
-          if (result.provider === 'api') patch.suno_task_id = result.taskId;
+          if (result.taskId) patch.suno_task_id = result.taskId;   // api E apipass usam taskId
           else patch.suno_clip_ids = result.clipIds;
+          // Métricas do A/B: braço SORTEADO + se precisou cross-fallback (falha do sorteado).
+          if (result.assigned) { patch.gen_ab_provider = result.assigned; patch.gen_ab_failed = !!result.fellBack; }
           await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, patch);
         }
 
@@ -464,6 +467,7 @@ const generateSong = inngest.createFunction(
             }
             await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
               stream_preview_url: streamClip.audio_url,
+              gen_stream_at: new Date().toISOString(),  // A/B: mede tempo até a prévia por provider
             });
             console.log(`[Inngest] ⚡ stream_preview_url setado (fase first) order=${d.orderId}`);
             return true;
@@ -476,7 +480,7 @@ const generateSong = inngest.createFunction(
       // re-submetemos automatico (max MAX_AUDIO_RETRIES vezes) e continuamos o
       // polling no taskId novo. Contador no DB pra durar entre re-execucoes do
       // Inngest function (cada re-execucao zerava o contador local antes).
-      if (pollResult.globalStatus === 'FAILED' && submitRef.provider === 'api') {
+      if (pollResult.globalStatus === 'FAILED' && submitRef.provider !== 'cookie') {
         const retryCheck = await step.run(`audio-retry-check-${attempt}`, async () => {
           if (!d.orderId) return { allowed: false, exhausted: false, current: 0 };
           const rows = await supaFetch('GET', `orders?id=eq.${d.orderId}&select=audio_retry_count`);
@@ -513,10 +517,10 @@ const generateSong = inngest.createFunction(
               negativeTags: d.negative_tags || undefined,
               fallbackArgs,
             });
-            if (d.orderId && result.provider === 'api') {
+            if (d.orderId && result.taskId) {
               await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
                 suno_task_id: result.taskId,
-                error_message: `[auto-resubmit ${retryCheck.current}] SUNOAPI Internal Error — taskId novo: ${result.taskId.slice(0,12)}`,
+                error_message: `[auto-resubmit ${retryCheck.current}] ${result.provider} Internal Error — taskId novo: ${result.taskId.slice(0,12)}`,
               });
             }
             return result;
