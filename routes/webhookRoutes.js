@@ -186,6 +186,8 @@ router.post('/api/webhooks/abacatepay', async (req, res) => {
         const fullOrder = fullRows?.[0];
         if (fullOrder && !fullOrder.meta_capi_sent) {
           const result = await sendPurchaseToMeta(fullOrder);
+          // TikTok Events API (server-side) — dispara junto, dedup por event_id com o pixel
+          require('../lib/tiktokCapi').sendPurchaseToTiktok(fullOrder).catch(() => {});
           if (result?.ok) {
             await supaFetch('PATCH', `orders?id=eq.${o.id}`, { meta_capi_sent: true });
           }
@@ -270,6 +272,8 @@ router.post('/api/webhooks/woovi', async (req, res) => {
       const fullOrder = fullRows?.[0];
       if (fullOrder && !fullOrder.meta_capi_sent) {
         const result = await sendPurchaseToMeta(fullOrder);
+        // TikTok Events API (server-side) — dispara junto, dedup por event_id com o pixel
+        require('../lib/tiktokCapi').sendPurchaseToTiktok(fullOrder).catch(() => {});
         if (result?.ok) await supaFetch('PATCH', `orders?id=eq.${o.id}`, { meta_capi_sent: true });
       }
     } catch (e) { console.error('[webhook woovi] CAPI falhou (ignorado):', e.message); }
@@ -350,6 +354,8 @@ router.post('/api/webhooks/asaas', async (req, res) => {
       const fullOrder = fullRows?.[0];
       if (fullOrder && !fullOrder.meta_capi_sent) {
         const result = await sendPurchaseToMeta(fullOrder);
+        // TikTok Events API (server-side) — dispara junto, dedup por event_id com o pixel
+        require('../lib/tiktokCapi').sendPurchaseToTiktok(fullOrder).catch(() => {});
         if (result?.ok) await supaFetch('PATCH', `orders?id=eq.${o.id}`, { meta_capi_sent: true });
       }
     } catch (e) { console.error('[webhook asaas] CAPI falhou (ignorado):', e.message); }
