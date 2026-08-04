@@ -178,16 +178,18 @@ router.post('/api/webhooks/abacatepay', async (req, res) => {
       }
       // Meta Conversions API (CAPI) — envio server-side garantido, dedup com client-side via event_id
       try {
-        let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
+        let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,kwai_clickid,paid_at`);
         // Fallback: se a coluna customer_email ainda nao existir, refaz sem ela
         if (!Array.isArray(fullRows) || !fullRows[0]) {
-          fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
+          fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,kwai_clickid,paid_at`);
         }
         const fullOrder = fullRows?.[0];
         if (fullOrder && !fullOrder.meta_capi_sent) {
           const result = await sendPurchaseToMeta(fullOrder);
           // TikTok Events API (server-side) — dispara junto, dedup por event_id com o pixel
           require('../lib/tiktokCapi').sendPurchaseToTiktok(fullOrder).catch(() => {});
+          // Kwai Event API (server-side) — atribui por kwai_clickid (só dispara se houver)
+          require('../lib/kwaiCapi').sendPurchaseToKwai(fullOrder).catch(() => {});
           if (result?.ok) {
             await supaFetch('PATCH', `orders?id=eq.${o.id}`, { meta_capi_sent: true });
           }
@@ -265,15 +267,17 @@ router.post('/api/webhooks/woovi', async (req, res) => {
       }
     } catch (e) { console.error('[webhook woovi] erro ao buscar pra email (ignorado):', e.message); }
     try {
-      let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
+      let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,kwai_clickid,paid_at`);
       if (!Array.isArray(fullRows) || !fullRows[0]) {
-        fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
+        fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,kwai_clickid,paid_at`);
       }
       const fullOrder = fullRows?.[0];
       if (fullOrder && !fullOrder.meta_capi_sent) {
         const result = await sendPurchaseToMeta(fullOrder);
         // TikTok Events API (server-side) — dispara junto, dedup por event_id com o pixel
         require('../lib/tiktokCapi').sendPurchaseToTiktok(fullOrder).catch(() => {});
+        // Kwai Event API (server-side) — atribui por kwai_clickid (só dispara se houver)
+        require('../lib/kwaiCapi').sendPurchaseToKwai(fullOrder).catch(() => {});
         if (result?.ok) await supaFetch('PATCH', `orders?id=eq.${o.id}`, { meta_capi_sent: true });
       }
     } catch (e) { console.error('[webhook woovi] CAPI falhou (ignorado):', e.message); }
@@ -347,15 +351,17 @@ router.post('/api/webhooks/asaas', async (req, res) => {
       }
     } catch (e) { console.error('[webhook asaas] erro ao buscar pra email (ignorado):', e.message); }
     try {
-      let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
+      let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,kwai_clickid,paid_at`);
       if (!Array.isArray(fullRows) || !fullRows[0]) {
-        fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,paid_at`);
+        fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,kwai_clickid,paid_at`);
       }
       const fullOrder = fullRows?.[0];
       if (fullOrder && !fullOrder.meta_capi_sent) {
         const result = await sendPurchaseToMeta(fullOrder);
         // TikTok Events API (server-side) — dispara junto, dedup por event_id com o pixel
         require('../lib/tiktokCapi').sendPurchaseToTiktok(fullOrder).catch(() => {});
+        // Kwai Event API (server-side) — atribui por kwai_clickid (só dispara se houver)
+        require('../lib/kwaiCapi').sendPurchaseToKwai(fullOrder).catch(() => {});
         if (result?.ok) await supaFetch('PATCH', `orders?id=eq.${o.id}`, { meta_capi_sent: true });
       }
     } catch (e) { console.error('[webhook asaas] CAPI falhou (ignorado):', e.message); }

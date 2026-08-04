@@ -132,6 +132,8 @@ router.post('/api/order', async (req, res) => {
       utm_term: _clip(b.utm_term, 100),
       utm_content: _clip(b.utm_content, 100),
       src: _clip(b.src, 100),
+      // Kwai click id (S2S/Event API atribui por ele — capturado da URL ?clickid=)
+      kwai_clickid: _clip(b.kwai_clickid, 200),
       status: 'generating', // SEMPRE server-side; cliente nao escolhe
     };
     // Insercao defensiva: se a coluna `customer_email` ainda nao existir no DB
