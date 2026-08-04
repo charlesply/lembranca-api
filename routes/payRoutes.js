@@ -207,6 +207,56 @@ router.post('/api/pay/create', async (req, res) => {
       });
     }
 
+    // ═══ APPMAX — PIX inline (SCAFFOLD, gated por PIX_PROVIDER=appmax) ═══
+    // ⚠️ NÃO ATIVO: só roda se PIX_PROVIDER=appmax (hoje = asaas). Mesma shape de
+    // resposta do ASAAS (brCode + brCodeBase64) → front não muda. Testar em
+    // SANDBOX antes de ligar. Confirmar os «TODO CONFIRMAR» em lib/appmax.js.
+    if (useProvider === 'appmax') {
+      const { createAppmaxPixCharge } = require('../lib/appmax');
+      // CPF obrigatório (Appmax exige document_number no PIX) — reusa a caixa de CPF.
+      let doc = onlyDigits(req.body?.cpf || req.body?.cpfCnpj || '');
+      if (!doc) {
+        return res.json({ ok: true, needs_cpf: true, prefilled_email: _oo.customer_email || null, honoree: _oo.honoree_name || null });
+      }
+      if (!isValidCpfCnpj(doc)) return res.status(400).json({ error: 'cpf_invalido', message: 'CPF/CNPJ inválido — confira os números 💛' });
+      let charge;
+      try {
+        charge = await createAppmaxPixCharge({
+          orderId, valueCents: cents, description: p.name, cpf: doc,
+          customerName: _oo.customer_name || _oo.honoree_name || 'Cliente',
+          email: emailForCheckout || _oo.customer_email, phone: _oo.phone,
+        });
+      } catch (e) {
+        // Fallback: Appmax falhou → gera Woovi na hora (ninguém fica sem pagar).
+        console.error('[/api/pay/create appmax] erro → fallback Woovi:', e.response?.data || e.message);
+        return await payWithWoovi();
+      }
+      const patchPay = {
+        bill_id: charge.id,
+        abacate_charge_id: charge.id,       // webhook amarra por aqui (pay_reference) OU por client_key=orderId
+        abacate_brcode: charge.brCode,
+        abacate_qrcode: charge.qrImageBase64,
+        abacate_status: 'PENDING',
+        payment_method: 'pix_appmax',
+        payment_amount: cents / 100,
+        plan,
+        ...variantPatch,
+      };
+      if (doc) patchPay.customer_cpf = doc;
+      if (emailForCheckout && emailForCheckout !== _oo.customer_email) patchPay.checkout_email = emailForCheckout;
+      if (p.includes_video) patchPay.video_upsell_status = 'brinde_pending';
+      try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (e) { console.error('[/api/pay/create appmax] patch err:', e.message); }
+      console.log('[/api/pay/create] APPMAX PIX criado:', charge.id, 'p/', orderId, '(', cents, 'cents)');
+      return res.json({
+        ok: true,
+        paymentId: charge.id,
+        brCode: charge.brCode,
+        brCodeBase64: charge.qrImageBase64,
+        amount: cents,
+        expiresAt: charge.expiresAt,
+      });
+    }
+
     // ═══ WOOVI — provedor da variante A (controle) e default global ═══
     if (useProvider === 'woovi') {
       return await payWithWoovi();

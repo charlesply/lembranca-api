@@ -373,6 +373,88 @@ router.post('/api/webhooks/asaas', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// APPMAX WEBHOOK — confirmação de pagamento PIX (SCAFFOLD, NÃO ATIVO).
+//
+// ⚠️ Só entra em ação quando a Appmax estiver configurada e apontar o postback
+// pra: https://suno-api-novo.bvph.uk/api/webhooks/appmax
+// Enquanto ninguém chama, essa rota fica dormente — não afeta nada.
+//
+// Eventos (envelope { event, event_type, data, client_key, external_key }):
+//   order_pix_created  → PIX gerado (ACK, não processa)
+//   order_paid_by_pix  → PAGO ✅ (marca pago + entrega, igual ASAAS/Woovi)
+//
+// ⚠️ A Appmax NÃO assina o webhook (sem HMAC). Validação defensiva:
+//   - token opcional na query (?token=) contra APPMAX_WEBHOOK_TOKEN, se setado
+//   - «TODO CONFIRMAR» allowlist de IP da Appmax (pedir a faixa ao suporte)
+//   - amarra o pedido por client_key (=nosso orderId, setado no /pay/create) ou
+//     fallback por abacate_charge_id (=pay_reference)
+// ═══════════════════════════════════════════════════════════════════════════
+router.post('/api/webhooks/appmax', async (req, res) => {
+  try {
+    const expected = process.env.APPMAX_WEBHOOK_TOKEN;
+    if (expected && req.query.token !== expected) return res.status(401).json({ error: 'unauthorized' });
+    if (!expected) console.warn('[webhook appmax] APPMAX_WEBHOOK_TOKEN não setado — aceitando sem validar token (setar + IP allowlist pra fechar)');
+
+    const event = String(req.body?.event || '');
+    const data = req.body?.data || {};
+    // Eventos que não são "pago" → ACK sem processar (inclui order_pix_created + o POST de teste).
+    if (!/order_paid_by_pix/i.test(event)) {
+      return res.json({ ok: true, ignored: event || 'no_event' });
+    }
+
+    // client_key = nosso orderId (setado no /pay/create). Fallback: pay_reference.
+    const clientKey = req.body?.client_key || data?.client_key || '';
+    const payRef = data?.pay_reference || data?.pix?.pix_ref || req.body?.external_key || '';
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientKey);
+    const filter = isUuid ? `id=eq.${clientKey}` : `abacate_charge_id=eq.${payRef}`;
+    console.log('[webhook appmax]', event, 'client_key=', clientKey, 'payRef=', payRef, '→ filter=', filter);
+
+    const rows = await supaFetch('GET', `orders?${filter}&select=id,status,plan`);
+    const o = rows?.[0];
+    if (!o) return res.json({ ok: true, found: false });
+    if (o.status === 'paid' || o.status === 'delivered') return res.json({ ok: true, already: true });
+
+    await supaFetch('PATCH', `orders?id=eq.${o.id}`, {
+      status: 'paid',
+      abacate_status: 'PAID',
+      paid_at: new Date().toISOString(),
+    });
+    console.log('[webhook appmax] order', o.id, 'PAID plan=', o.plan);
+
+    // ── mesma entrega do ASAAS/Woovi/AbacatePay (fire-and-forget) ──
+    if (require('../lib/payPlans').isVideoPlan(o.plan)) {
+      try { require('../lib/brindeVideo').generateBrindeForOrder(o.id); } catch (_) {}
+    }
+    try { require('../lib/salesNotify').notifySale(o.id); } catch (e) { console.error('[salesNotify] init err:', e.message); }
+    try {
+      const emailRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,honoree_name,customer_name,customer_email,plan,original_audio_url,full_audio_urls,video_brinde_url,email_delivery_sent`);
+      const emailOrder = emailRows?.[0];
+      if (emailOrder && emailOrder.customer_email && !emailOrder.email_delivery_sent) {
+        require('../lib/emailDelivery').sendDeliveryEmail(emailOrder).catch(e => console.error('[webhook appmax] email delivery falhou (cron tenta de novo):', e.message));
+      }
+    } catch (e) { console.error('[webhook appmax] erro ao buscar pra email (ignorado):', e.message); }
+    try {
+      let fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,customer_email,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,kwai_clickid,paid_at`);
+      if (!Array.isArray(fullRows) || !fullRows[0]) {
+        fullRows = await supaFetch('GET', `orders?id=eq.${o.id}&select=id,customer_name,phone,payment_amount,plan,fbp_pixel_id,fbp,fbc,client_ip,client_user_agent,meta_capi_sent,kwai_clickid,paid_at`);
+      }
+      const fullOrder = fullRows?.[0];
+      if (fullOrder && !fullOrder.meta_capi_sent) {
+        const result = await sendPurchaseToMeta(fullOrder);
+        require('../lib/tiktokCapi').sendPurchaseToTiktok(fullOrder).catch(() => {});
+        require('../lib/kwaiCapi').sendPurchaseToKwai(fullOrder).catch(() => {});
+        if (result?.ok) await supaFetch('PATCH', `orders?id=eq.${o.id}`, { meta_capi_sent: true });
+      }
+    } catch (e) { console.error('[webhook appmax] CAPI falhou (ignorado):', e.message); }
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[webhook appmax] erro:', e.message);
+    res.status(500).json({ error: 'erro interno' });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // WEBHOOK Resend — atualiza promo_campaigns com eventos de email.
 //
