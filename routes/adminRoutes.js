@@ -106,6 +106,17 @@ router.get('/api/admin/email_delivery_run', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ Appmax: ver instalações capturadas (credenciais de merchant) ═══
+// GET /api/admin/appmax/installations?secret=XXX → lista o que a Appmax POSTou
+// no callback de instalação (client_id/secret de merchant p/ destravar a API).
+router.get('/api/admin/appmax/installations', adminAuth, async (req, res) => {
+  try {
+    const { supaFetch } = require('../lib/supabase');
+    const rows = await supaFetch('GET', 'appmax_installations?select=*&order=created_at.desc');
+    res.json({ ok: true, count: Array.isArray(rows) ? rows.length : 0, installations: rows || [] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══ Envia email de teste pra validar template + DNS (não toca no DB) ═══
 // GET /api/admin/email_test?secret=XXX&to=alguem@email.com&orderId=optional
 router.get('/api/admin/email_test', adminAuth, async (req, res) => {

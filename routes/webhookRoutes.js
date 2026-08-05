@@ -289,13 +289,39 @@ router.post('/api/webhooks/woovi', async (req, res) => {
   }
 });
 
-// ── Appmax health-check / URL de validação da instalação ────────────────────
-// A validação de instalação do app Appmax faz uma request nesta URL e espera um
-// campo `external_id` no formato UUID e DINÂMICO (diferente a cada chamada).
-// Endpoint isolado, read-only, SEM efeito colateral (não toca pedido/checkout).
-// Aceita GET e POST. URL a cadastrar no painel: /api/webhooks/appmax/health
-router.all('/api/webhooks/appmax/health', (req, res) => {
-  res.json({ external_id: require('crypto').randomUUID(), status: 'ok', ts: new Date().toISOString() });
+// ── Appmax health-check + CALLBACK DE INSTALAÇÃO ─────────────────────────────
+// É a URL "Health check" do painel. A Appmax faz request aqui e espera um
+// `external_id` UUID DINÂMICO. MAS no fluxo de INSTALAÇÃO ela também POSTa aqui
+// as CREDENCIAIS DE MERCHANT (client_id/client_secret do merchant) — que são o
+// que destrava os endpoints de recurso (customer/order/pix). Então: capturamos
+// e salvamos em appmax_installations, e sempre respondemos external_id.
+// Não toca pedido/checkout. Aceita GET (health) e POST (install).
+router.all('/api/webhooks/appmax/health', async (req, res) => {
+  const external_id = require('crypto').randomUUID();
+  try {
+    const b = req.body || {};
+    if (b && Object.keys(b).length) console.log('[appmax/install] recv:', JSON.stringify(b).slice(0, 1200));
+    const mClientId = b.client_id || b.clientId || b.merchant_client_id;
+    const mClientSecret = b.client_secret || b.clientSecret || b.merchant_client_secret;
+    const externalKey = b.external_key || b.externalKey || b.client_key || 'default';
+    if (mClientId && mClientSecret) {
+      const row = {
+        external_key: String(externalKey),
+        client_key: b.client_key ? String(b.client_key) : null,
+        app_id: b.app_id != null ? String(b.app_id) : null,
+        merchant_client_id: String(mClientId),
+        merchant_client_secret: String(mClientSecret),
+        environment: b.environment ? String(b.environment) : null,
+        raw: b,
+        updated_at: new Date().toISOString(),
+      };
+      try {
+        await supaFetch('POST', 'appmax_installations?on_conflict=external_key', row, { Prefer: 'resolution=merge-duplicates' });
+        console.log('[appmax/install] ✅ credenciais de merchant capturadas p/ external_key', externalKey);
+      } catch (e) { console.error('[appmax/install] falha ao salvar credenciais:', e.message); }
+    }
+  } catch (e) { console.error('[appmax/install] erro (ignorado):', e.message); }
+  res.json({ external_id, status: 'ok' });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
