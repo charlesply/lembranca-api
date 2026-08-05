@@ -289,6 +289,15 @@ router.post('/api/webhooks/woovi', async (req, res) => {
   }
 });
 
+// ── Appmax health-check / URL de validação da instalação ────────────────────
+// A validação de instalação do app Appmax faz uma request nesta URL e espera um
+// campo `external_id` no formato UUID e DINÂMICO (diferente a cada chamada).
+// Endpoint isolado, read-only, SEM efeito colateral (não toca pedido/checkout).
+// Aceita GET e POST. URL a cadastrar no painel: /api/webhooks/appmax/health
+router.all('/api/webhooks/appmax/health', (req, res) => {
+  res.json({ external_id: require('crypto').randomUUID(), status: 'ok', ts: new Date().toISOString() });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ASAAS WEBHOOK — confirmação de pagamento PIX (conta própria LUPELIUS).
 //
