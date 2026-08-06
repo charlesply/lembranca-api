@@ -126,7 +126,14 @@ router.get('/api/admin/sms_test', adminAuth, async (req, res) => {
     if (!sms.SMS_ENABLED) return res.json({ ok: false, note: 'SMS desativado — setar SMS_ENABLED=true + SMS_ACCOUNT + SMS_CODE no Coolify pra ativar.' });
     const to = String(req.query.to || '').trim();
     if (!to) return res.status(400).json({ error: 'param to= obrigatorio (telefone)' });
-    const order = { id: req.query.orderId || '00000000-0000-0000-0000-000000000000', customer_name: req.query.name || 'Teste', phone: to };
+    // Modo TEXTO PURO (?msg=...) — sem <LINK>, pra isolar moderacao de link. id unico.
+    if (req.query.msg) {
+      const msg = sms.stripAccents(String(req.query.msg)).slice(0, 160);
+      const r = await sms.sendSmsBatch([{ to: sms.formatPhone(to), tipoEnvio: '2', msg, id: 'smstest-' + Date.now() }]);
+      return res.json({ ok: !!r.ok, mode: 'plain', msg, result: r });
+    }
+    // id unico por teste (id duplicado = BLOQUEADA na plataforma)
+    const order = { id: req.query.orderId || ('t' + Date.now()), customer_name: req.query.name || 'Teste', phone: to };
     const type = String(req.query.type || 'recovery').toLowerCase();
     const r = type === 'delivery' ? await sms.sendDeliverySms(order) : await sms.sendRecoverySms(order);
     res.json({ ok: !!r.ok, type, result: r });
