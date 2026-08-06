@@ -133,6 +133,15 @@ router.get('/api/admin/sms_test', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ IP de saída do servidor (p/ cadastrar em whitelist: SMS TeleSegNet etc) ═══
+// GET /api/admin/myip?secret=XXX
+router.get('/api/admin/myip', adminAuth, async (req, res) => {
+  try {
+    const r = await axios.get('https://api.ipify.org?format=json', { timeout: 8000 });
+    res.json({ ok: true, outbound_ip: r.data?.ip });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══ Envia email de teste pra validar template + DNS (não toca no DB) ═══
 // GET /api/admin/email_test?secret=XXX&to=alguem@email.com&orderId=optional
 router.get('/api/admin/email_test', adminAuth, async (req, res) => {
