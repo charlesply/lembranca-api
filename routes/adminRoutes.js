@@ -117,6 +117,22 @@ router.get('/api/admin/appmax/installations', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ SMS: teste de envio (TeleSegNet) ═══
+// GET /api/admin/sms_test?secret=XXX&to=5511999999999&name=Wellington&type=recovery|delivery&orderId=UUID
+// Gated por SMS_ENABLED + SMS_ACCOUNT/SMS_CODE. Sem creds = no-op (avisa no retorno).
+router.get('/api/admin/sms_test', adminAuth, async (req, res) => {
+  try {
+    const sms = require('../lib/sms');
+    if (!sms.SMS_ENABLED) return res.json({ ok: false, note: 'SMS desativado — setar SMS_ENABLED=true + SMS_ACCOUNT + SMS_CODE no Coolify pra ativar.' });
+    const to = String(req.query.to || '').trim();
+    if (!to) return res.status(400).json({ error: 'param to= obrigatorio (telefone)' });
+    const order = { id: req.query.orderId || '00000000-0000-0000-0000-000000000000', customer_name: req.query.name || 'Teste', phone: to };
+    const type = String(req.query.type || 'recovery').toLowerCase();
+    const r = type === 'delivery' ? await sms.sendDeliverySms(order) : await sms.sendRecoverySms(order);
+    res.json({ ok: !!r.ok, type, result: r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══ Envia email de teste pra validar template + DNS (não toca no DB) ═══
 // GET /api/admin/email_test?secret=XXX&to=alguem@email.com&orderId=optional
 router.get('/api/admin/email_test', adminAuth, async (req, res) => {
