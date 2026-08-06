@@ -14,6 +14,23 @@ const { inngest } = require('../inngest/client');
 
 const router = express.Router();
 
+// GET /s/:id — link curto do SMS: marca o CLIQUE (sms_clicked_at) e redireciona
+// pra pagina certa. Nao pago -> /finalizar/{id}?src=sms · Pago -> /p/{id}?src=sms.
+// O <LINK> da TeleSegNet aponta pra ca → rastreamos quem clicou POR PESSOA.
+router.get('/s/:id', async (req, res) => {
+  const SITE = (process.env.FRONTEND_URL || 'https://app.lembrancacantada.com').replace(/\/+$/, '');
+  const id = String(req.params.id || '');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return res.redirect(302, SITE);
+  try {
+    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=id,status,paid_at,sms_clicked_at`);
+    const o = Array.isArray(rows) && rows[0];
+    if (!o) return res.redirect(302, SITE);
+    if (!o.sms_clicked_at) supaFetch('PATCH', `orders?id=eq.${id}`, { sms_clicked_at: new Date().toISOString() }).catch(() => {});
+    const paid = o.paid_at || ['paid', 'delivered'].includes(String(o.status || '').toLowerCase());
+    return res.redirect(302, paid ? `${SITE}/p/${id}?src=sms` : `${SITE}/finalizar/${id}?src=sms`);
+  } catch (e) { return res.redirect(302, SITE); }
+});
+
 // POST /api/chat/ack — Bia responde com 1-2 frases curtas via GPT-4o-mini.
 // Tom acolhedor, sem cliche, max 1 emoji. Se a historia veio curta (<8
 // palavras) pede 1 detalhe a mais; senao, agradece citando um detalhe.
