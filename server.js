@@ -232,6 +232,12 @@ app.listen(PORT, '0.0.0.0', () => {
     const { startRecoveryEmailCron } = require('./lib/recoveryEmailCron');
     startRecoveryEmailCron();
   } catch (err) { console.error('[recoveryCron] falha ao iniciar (ignorado):', err.message); }
+  // Cron SMS (modo produção forward-only, capado). DESLIGADO por padrão
+  // (SMS_CRON_ENABLED!=true). Só envia com SMS_CRON_SINCE setado (anti-blast).
+  try {
+    const { startSmsCron } = require('./lib/smsCron');
+    startSmsCron();
+  } catch (err) { console.error('[smsCron] falha ao iniciar (ignorado):', err.message); }
   // Cron CAPI Monitor — rede de segurança pra Meta CAPI. Varre orders pagas das últimas 24h
   // sem meta_capi_sent e reenvia o Purchase. Cobre falhas do webhook AbacatePay, restart no
   // exato momento do pagamento, token vazio, etc. Default ON em prod.

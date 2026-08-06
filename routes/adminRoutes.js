@@ -140,6 +140,16 @@ router.get('/api/admin/sms_test', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ SMS cron: rodada manual (modo produção capado) ═══
+// GET /api/admin/sms_cron_run?secret=XXX → roda 1 varredura (respeita SINCE+teto).
+router.get('/api/admin/sms_cron_run', adminAuth, async (req, res) => {
+  try {
+    const { runSmsOnce } = require('../lib/smsCron');
+    const r = await runSmsOnce('manual');
+    res.json({ ok: true, result: r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══ IP de saída do servidor (p/ cadastrar em whitelist: SMS TeleSegNet etc) ═══
 // GET /api/admin/myip?secret=XXX
 router.get('/api/admin/myip', adminAuth, async (req, res) => {
