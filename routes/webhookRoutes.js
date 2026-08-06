@@ -173,6 +173,7 @@ router.post('/api/webhooks/abacatepay', async (req, res) => {
             console.error('[webhook abacatepay] email delivery falhou (ignorado, cron tenta de novo):', e.message);
           });
         }
+        require('../lib/sms').deliverSmsOnPaid(o.id).catch(() => {}); // SMS de entrega INSTANTÂNEO (igual e-mail)
       } catch (e) {
         console.error('[webhook abacatepay] erro ao buscar pra email (ignorado):', e.message);
       }
@@ -264,6 +265,7 @@ router.post('/api/webhooks/woovi', async (req, res) => {
       const emailOrder = emailRows?.[0];
       if (emailOrder && emailOrder.customer_email && !emailOrder.email_delivery_sent) {
         require('../lib/emailDelivery').sendDeliveryEmail(emailOrder).catch(e => console.error('[webhook woovi] email delivery falhou (cron tenta de novo):', e.message));
+        require('../lib/sms').deliverSmsOnPaid(o.id).catch(() => {}); // SMS de entrega INSTANTÂNEO (igual e-mail)
       }
     } catch (e) { console.error('[webhook woovi] erro ao buscar pra email (ignorado):', e.message); }
     try {
@@ -383,6 +385,7 @@ router.post('/api/webhooks/asaas', async (req, res) => {
       const emailOrder = emailRows?.[0];
       if (emailOrder && emailOrder.customer_email && !emailOrder.email_delivery_sent) {
         require('../lib/emailDelivery').sendDeliveryEmail(emailOrder).catch(e => console.error('[webhook asaas] email delivery falhou (cron tenta de novo):', e.message));
+        require('../lib/sms').deliverSmsOnPaid(o.id).catch(() => {}); // SMS de entrega INSTANTÂNEO (igual e-mail)
       }
     } catch (e) { console.error('[webhook asaas] erro ao buscar pra email (ignorado):', e.message); }
     try {
