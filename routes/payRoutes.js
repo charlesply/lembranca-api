@@ -56,7 +56,7 @@ router.post('/api/pay/create', async (req, res) => {
 
     // 🔒 Carrega o pedido — inclui a VARIANTE DE PREÇO fixada nele (fonte da
     // verdade). Também é a trava "sem prévia = sem pagamento" (evita pago-sem-música).
-    const _ord = await supaFetch('GET', `orders?id=eq.${orderId}&select=preview_audio_url,stream_preview_url,status,paid_at,price_variant,checkout_variant,customer_email,customer_name,honoree_name,phone,asaas_customer_id`);
+    const _ord = await supaFetch('GET', `orders?id=eq.${orderId}&select=preview_audio_url,stream_preview_url,status,paid_at,price_variant,checkout_variant,customer_email,customer_name,honoree_name,phone,asaas_customer_id,kwai_clickid`);
     const _oo = Array.isArray(_ord) && _ord[0];
     if (!_oo) return res.status(404).json({ error: 'pedido nao encontrado' });
 
@@ -87,6 +87,14 @@ router.post('/api/pay/create', async (req, res) => {
     // DOIS (mitiga typo: se ele errou aqui mas o anterior estava certo, recebe).
     const _emailRaw = String(req.body?.email || req.body?.customer_email || '').trim().toLowerCase().slice(0, 120);
     const emailForCheckout = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(_emailRaw) ? _emailRaw : null;
+
+    // Kwai AddToCart (server-side) — o cliente clicou pra GERAR PIX (forte sinal de
+    // intenção). Só dispara se o pedido veio de um clique Kwai (tem kwai_clickid).
+    // Evento de OTIMIZAÇÃO de campanha (Kwai pede >=20 compras p/ otimizar por
+    // Purchase; até lá otimiza por AddToCart). Fire-and-forget, não bloqueia o PIX.
+    if (_oo.kwai_clickid) {
+      require('../lib/kwaiCapi').sendAddToCartToKwai({ id: orderId, kwai_clickid: _oo.kwai_clickid, payment_amount: cents / 100, plan }).catch(() => {});
+    }
 
     // Helper: gera PIX na Woovi. Usado quando useProvider=woovi E como FALLBACK da
     // variante B se a ASAAS falhar/bloquear (WAF) — assim ninguém fica sem pagar.
