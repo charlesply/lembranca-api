@@ -454,6 +454,20 @@ router.post('/api/webhooks/resend', async (req, res) => {
       return res.json({ ok: true, ignored: type });
     }
 
+    // RECUPERAÇÃO: clique atribuído ao PEDIDO (email_clicked_at) — conversão só
+    // conta quem CLICOU (igual SMS). Match pelo resend id do envio de recuperação.
+    if (type === 'email.clicked') {
+      try {
+        const oRows = await supaFetch('GET', `orders?recovery_email_resend_id=eq.${encodeURIComponent(emailId)}&select=id,email_clicked_at`);
+        const o = Array.isArray(oRows) && oRows[0];
+        if (o) {
+          if (!o.email_clicked_at) await supaFetch('PATCH', `orders?id=eq.${o.id}`, { email_clicked_at: at });
+          console.log('[webhook resend] email.clicked → order', o.id);
+          return res.json({ ok: true, order_click: true });
+        }
+      } catch (e) { console.error('[webhook resend] orders click match err:', e.message); }
+    }
+
     // Acha o registro de envio pelo email_id (gravado em email_status)
     const rows = await supaFetch('GET',
       `promo_campaigns?email_status=eq.${encodeURIComponent(emailId)}&select=id,${col}`);
