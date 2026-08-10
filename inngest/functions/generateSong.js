@@ -138,7 +138,17 @@ const generateSong = inngest.createFunction(
         return d.prompt || d.story || null;
       }
 
-      console.log(`[Inngest] 📝 Gerando letra via GPT para ${d.honoreeName || 'alguem'}...`);
+      // ─── A/B do PROMPT de letra (10/ago/2026) ───
+      // 'rules' = prompt com travas (fardo/cruz, conotação adulta, gênero
+      // religioso, idade, preâmbulo). 'control' = prompt atual. 50/50 estável
+      // por orderId (idempotente em retry). Gate LYRICS_AB_ENABLED; off = control.
+      let lyricsAb = 'control';
+      if (process.env.LYRICS_AB_ENABLED === 'true' && d.orderId) {
+        const hex = String(d.orderId).replace(/[^0-9a-f]/gi, '').slice(-1) || '0';
+        lyricsAb = (parseInt(hex, 16) % 2 === 0) ? 'control' : 'rules';
+      }
+
+      console.log(`[Inngest] 📝 Gerando letra via GPT para ${d.honoreeName || 'alguem'} (ab=${lyricsAb})...`);
       const generatedLyrics = await generateLyricsWithGPT(d.story, {
         honoreeName: d.honoreeName,
         relationship: d.relationship,
@@ -146,6 +156,7 @@ const generateSong = inngest.createFunction(
         genre: d.genre,
         mood: d.mood,
         voice: d.voice,
+        promptVariant: lyricsAb,
       });
 
       // Salvar lyrics no Supabase
@@ -153,6 +164,7 @@ const generateSong = inngest.createFunction(
         await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
           status: 'generating',
           final_lyrics: generatedLyrics,
+          lyrics_ab: lyricsAb,
         });
       }
 
