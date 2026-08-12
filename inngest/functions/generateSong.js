@@ -1,7 +1,7 @@
 const { inngest } = require('../client');
 const { NonRetriableError } = require('inngest');
 const { supaFetch } = require('../../lib/supabase');
-const { generateLyricsWithGPT } = require('../../lib/openai');
+const { generateLyricsWithGPT, verifyAndFixLyrics } = require('../../lib/openai');
 const { createPreviewFromUrl, SELF_URL } = require('../../lib/audio');
 const { getClient, resetClient } = require('../../lib/suno');
 // Provider abstrato: tenta sunoapi.org primeiro (API paga, V5_5),
@@ -138,18 +138,20 @@ const generateSong = inngest.createFunction(
         return d.prompt || d.story || null;
       }
 
-      // ─── A/B do PROMPT de letra (10/ago/2026) ───
-      // 'rules' = prompt com travas (fardo/cruz, conotação adulta, gênero
-      // religioso, idade, preâmbulo). 'control' = prompt atual. 50/50 estável
-      // por orderId (idempotente em retry). Gate LYRICS_AB_ENABLED; off = control.
-      let lyricsAb = 'control';
-      if (process.env.LYRICS_AB_ENABLED === 'true' && d.orderId) {
-        const hex = String(d.orderId).replace(/[^0-9a-f]/gi, '').slice(-1) || '0';
-        lyricsAb = (parseInt(hex, 16) % 2 === 0) ? 'control' : 'rules';
+      // ─── PROMPT de letra: 'rules' venceu o A/B (10/ago) → padrão pra todos ───
+      const lyricsAb = 'rules';
+
+      // ─── A/B/C da VERIFICAÇÃO pós-geração (10/ago/2026) ───
+      // A = só rules (control) · B = rules + editor gpt-4o-mini · C = rules + editor gpt-4o.
+      // Split 40/40/20 estável por orderId (idempotente em retry). Gate VERIFY_AB_ENABLED.
+      let verifyAb = 'A';
+      if (process.env.VERIFY_AB_ENABLED === 'true' && d.orderId) {
+        const h = parseInt(String(d.orderId).replace(/[^0-9a-f]/gi, '').slice(-6) || '0', 16) % 100;
+        verifyAb = h < 40 ? 'A' : h < 80 ? 'B' : 'C';
       }
 
-      console.log(`[Inngest] 📝 Gerando letra via GPT para ${d.honoreeName || 'alguem'} (ab=${lyricsAb})...`);
-      const generatedLyrics = await generateLyricsWithGPT(d.story, {
+      console.log(`[Inngest] 📝 Gerando letra via GPT para ${d.honoreeName || 'alguem'} (verify=${verifyAb})...`);
+      let generatedLyrics = await generateLyricsWithGPT(d.story, {
         honoreeName: d.honoreeName,
         relationship: d.relationship,
         occasion: d.occasion,
@@ -159,12 +161,29 @@ const generateSong = inngest.createFunction(
         promptVariant: lyricsAb,
       });
 
+      // Verificação pós-geração (só B/C). FAIL-OPEN: qualquer erro → mantém a letra original.
+      let verifyChanged = false;
+      if (generatedLyrics && verifyAb !== 'A') {
+        try {
+          const model = verifyAb === 'C' ? 'gpt-4o' : 'gpt-4o-mini';
+          const v = await verifyAndFixLyrics(generatedLyrics, d.story, {
+            honoreeName: d.honoreeName, relationship: d.relationship, occasion: d.occasion,
+            genre: d.genre, mood: d.mood, voice: d.voice,
+          }, { model });
+          if (v && v.lyrics && v.lyrics.trim()) { generatedLyrics = v.lyrics; verifyChanged = !!v.changed; }
+        } catch (e) {
+          console.error('[Inngest] verificação pós-geração falhou, usando letra original:', e.message);
+        }
+      }
+
       // Salvar lyrics no Supabase
       if (d.orderId && generatedLyrics) {
         await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
           status: 'generating',
           final_lyrics: generatedLyrics,
           lyrics_ab: lyricsAb,
+          verify_ab: verifyAb,
+          verify_changed: verifyChanged,
         });
       }
 
