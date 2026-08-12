@@ -1,7 +1,7 @@
 const { inngest } = require('../client');
 const { NonRetriableError } = require('inngest');
 const { supaFetch } = require('../../lib/supabase');
-const { generateLyricsWithGPT, verifyAndFixLyrics } = require('../../lib/openai');
+const { generateLyricsWithGPT, verifyAndFixLyrics, fixCoupleGender } = require('../../lib/openai');
 const { createPreviewFromUrl, SELF_URL } = require('../../lib/audio');
 const { getClient, resetClient } = require('../../lib/suno');
 // Provider abstrato: tenta sunoapi.org primeiro (API paga, V5_5),
@@ -177,6 +177,10 @@ const generateSong = inngest.createFunction(
           console.error('[Inngest] verificação pós-geração falhou, usando letra original:', e.message);
         }
       }
+
+      // Trava determinística de gênero do casal (juntas->juntos em casal hetero),
+      // pós-editor. Roda em A e B — pega o "juntas" que o LLM às vezes deixa escapar.
+      if (generatedLyrics) generatedLyrics = fixCoupleGender(generatedLyrics, d.relationship);
 
       // Salvar lyrics no Supabase
       if (d.orderId && generatedLyrics) {
