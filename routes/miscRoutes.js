@@ -22,13 +22,33 @@ router.get('/s/:id', async (req, res) => {
   const id = String(req.params.id || '');
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return res.redirect(302, SITE);
   try {
-    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=id,status,paid_at,sms_clicked_at`);
+    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=id,status,paid_at,sms_redirected_at`);
     const o = Array.isArray(rows) && rows[0];
     if (!o) return res.redirect(302, SITE);
-    if (!o.sms_clicked_at) supaFetch('PATCH', `orders?id=eq.${id}`, { sms_clicked_at: new Date().toISOString() }).catch(() => {});
+    // Marca só o REDIRECT (todo acesso ao /s, INCLUI bot/scanner de link). O clique
+    // REAL é o beacon /api/sms/click-confirm (só dispara quando a PÁGINA renderiza
+    // no navegador). Bot pega o 302 aqui, mas não carrega a página → não conta clique.
+    if (!o.sms_redirected_at) supaFetch('PATCH', `orders?id=eq.${id}`, { sms_redirected_at: new Date().toISOString() }).catch(() => {});
     const paid = o.paid_at || ['paid', 'delivered'].includes(String(o.status || '').toLowerCase());
     return res.redirect(302, paid ? `${SITE}/p/${id}?src=sms` : `${SITE}/finalizar/${id}?src=sms`);
   } catch (e) { return res.redirect(302, SITE); }
+});
+
+// POST /api/sms/click-confirm {id} — beacon de CARGA REAL da página (disparado
+// pelo navegador quando /finalizar ou /p abre com ?src=sms). É o clique honesto:
+// bot faz fetch do /s mas não renderiza a página, então nunca chega aqui.
+router.post('/api/sms/click-confirm', async (req, res) => {
+  try {
+    const id = String(req.body?.id || '');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return res.json({ ok: false });
+    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=id,sms_sent_at,sms_clicked_at`);
+    const o = Array.isArray(rows) && rows[0];
+    // só conta se REALMENTE mandamos SMS pra esse pedido e ainda não tem clique
+    if (o && o.sms_sent_at && !o.sms_clicked_at) {
+      await supaFetch('PATCH', `orders?id=eq.${id}`, { sms_clicked_at: new Date().toISOString() }).catch(() => {});
+    }
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false }); }
 });
 
 // POST /api/chat/ack — Bia responde com 1-2 frases curtas via GPT-4o-mini.
