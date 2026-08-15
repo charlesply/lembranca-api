@@ -144,13 +144,10 @@ const generateSong = inngest.createFunction(
       // ─── A/B/C da VERIFICAÇÃO pós-geração (10/ago/2026) ───
       // A = só rules (control) · B = rules + editor gpt-4o-mini · C = rules + editor gpt-4o.
       // Split 40/40/20 estável por orderId (idempotente em retry). Gate VERIFY_AB_ENABLED.
-      // C (gpt-4o) CORTADO 12/ago: análise de 150 letras mostrou qualidade ≈ mini a ~25x
-      // o custo. Agora só A (sem verificação) × B (editor gpt-4o-mini), 50/50.
-      let verifyAb = 'A';
-      if (process.env.VERIFY_AB_ENABLED === 'true' && d.orderId) {
-        const h = parseInt(String(d.orderId).replace(/[^0-9a-f]/gi, '').slice(-6) || '0', 16) % 100;
-        verifyAb = h < 50 ? 'A' : 'B';
-      }
+      // Editor de verificação (gpt-4o-mini) virou PADRÃO 13/ago — venceu o A/B
+      // (menos erro, mata 'cruz', corrige idade/gênero/palavra inventada). Agora
+      // TODOS passam pelo editor. 'B' fica só como marca no registro.
+      const verifyAb = 'B';
 
       console.log(`[Inngest] 📝 Gerando letra via GPT para ${d.honoreeName || 'alguem'} (verify=${verifyAb})...`);
       let generatedLyrics = await generateLyricsWithGPT(d.story, {
