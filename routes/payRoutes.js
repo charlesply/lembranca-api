@@ -98,12 +98,18 @@ router.post('/api/pay/create', async (req, res) => {
 
     // Helper: gera PIX na Woovi. Usado quando useProvider=woovi E como FALLBACK da
     // variante B se a ASAAS falhar/bloquear (WAF) — assim ninguém fica sem pagar.
-    const payWithWoovi = async () => {
+    const payWithWoovi = async (doc) => {
       if (!WOOVI_APP_ID) return res.status(503).json({ error: 'Woovi nao configurado (WOOVI_APP_ID)' });
       const correlationID = `${orderId}-${plan}-${Math.floor(Date.now() / 1000)}`;
+      const customer = doc ? {
+        name: _oo.customer_name || _oo.honoree_name || 'Cliente',
+        taxID: doc,
+        email: emailForCheckout || _oo.customer_email || undefined,
+        phone: _oo.phone || undefined,
+      } : undefined;
       let charge;
       try {
-        charge = await createWooviCharge({ correlationID, valueCents: cents, comment: p.name });
+        charge = await createWooviCharge({ correlationID, valueCents: cents, comment: p.name, customer });
       } catch (e) {
         console.error('[/api/pay/create woovi] erro:', e.response?.data || e.message);
         return res.status(502).json({ error: 'falha ao gerar PIX (woovi)', detail: String(e.response?.data?.error || e.message) });
@@ -119,6 +125,7 @@ router.post('/api/pay/create', async (req, res) => {
         plan,
         ...variantPatch,
       };
+      if (doc) patchPay.customer_cpf = doc;
       if (emailForCheckout && emailForCheckout !== _oo.customer_email) patchPay.checkout_email = emailForCheckout;
       if (p.includes_video) patchPay.video_upsell_status = 'brinde_pending';
       try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, patchPay); } catch (e) { console.error('[/api/pay/create woovi] patch err:', e.message); }
@@ -174,7 +181,7 @@ router.post('/api/pay/create', async (req, res) => {
         } catch (e) {
           console.error('[/api/pay/create asaas] createCustomer falhou → fallback Woovi:', e.response?.data || e.message);
           try { require('../lib/opsMonitor').recordAsaasOutcome(false); } catch (_) {}
-          return await payWithWoovi();
+          return await payWithWoovi(doc);
         }
       }
       let charge;
@@ -184,7 +191,7 @@ router.post('/api/pay/create', async (req, res) => {
         // Fallback: ASAAS bloqueou (WAF/403) ou falhou → gera Woovi na hora.
         console.error('[/api/pay/create asaas] erro → fallback Woovi:', e.response?.data || e.message);
         try { require('../lib/opsMonitor').recordAsaasOutcome(false); } catch (_) {}
-        return await payWithWoovi();
+        return await payWithWoovi(doc);
       }
       // ASAAS gerou o PIX com sucesso — registra pro monitor de fallback.
       try { require('../lib/opsMonitor').recordAsaasOutcome(true); } catch (_) {}
@@ -215,9 +222,16 @@ router.post('/api/pay/create', async (req, res) => {
       });
     }
 
-    // ═══ WOOVI — provedor da variante A (controle) e default global ═══
+    // ═══ WOOVI — PIX com CPF (13/ago: ASAAS instável → Woovi + a MESMA caixa de CPF) ═══
+    // Mesma estrutura do ASAAS: pede CPF (CheckoutCpfBox), valida, grava customer_cpf,
+    // e manda o doc pro Woovi como taxID. Só o PIX copia-e-cola que passa a ser Woovi.
     if (useProvider === 'woovi') {
-      return await payWithWoovi();
+      const doc = onlyDigits(req.body?.cpf || req.body?.cpfCnpj || '');
+      if (!doc) {
+        return res.json({ ok: true, needs_cpf: true, prefilled_email: _oo.customer_email || null, honoree: _oo.honoree_name || null });
+      }
+      if (!isValidCpfCnpj(doc)) return res.status(400).json({ error: 'cpf_invalido', message: 'CPF/CNPJ inválido — confira os números 💛' });
+      return await payWithWoovi(doc);
     }
 
     // ═══ ABACATEPAY (default) ═══
