@@ -20,6 +20,7 @@ const { supaFetch } = require('../../lib/supabase');
 const sunoProvider = require('../../lib/sunoProvider');
 const { clipCdnUrl } = require('../../lib/sunoApi');
 const { sendEditReadyEmail, sendPreviewReadyEmail } = require('../../lib/emailDelivery');
+const { fixBannedMetaphors } = require('../../lib/openai');
 
 // Planos que incluem vídeo (completa + promos c/ vídeo). Fonte única: payPlans.
 let VIDEO_PLAN_KEYS = ['completa'];
@@ -66,8 +67,17 @@ const regenerateEditedSong = inngest.createFunction(
       return o;
     });
 
-    const lyrics = (d.lyrics || info.final_lyrics || '').toString();
+    let lyrics = (d.lyrics || info.final_lyrics || '').toString();
     if (!lyrics.trim()) throw new NonRetriableError('sem letra pra gerar');
+    // Trava determinística anti-metáfora ofensiva (cruz/fardo/sina/...): o caminho de
+    // edição/self-edit submetia a letra direto pro Suno SEM revisor nem trava — era por
+    // aqui que "você é minha cruz" escapava (ex.: Dêva 25/ago, self-edit). Neutraliza
+    // antes de submeter e persiste a letra corrigida se mudou.
+    const _fixedLyrics = fixBannedMetaphors(lyrics);
+    if (_fixedLyrics !== lyrics) {
+      lyrics = _fixedLyrics;
+      try { await supaFetch('PATCH', `orders?id=eq.${orderId}`, { final_lyrics: lyrics }); } catch (_) {}
+    }
     const title = info.honoree_name ? `Para ${info.honoree_name}` : 'Sua música';
     const vr = String(info.voice_preference || '');
     const vocalGender = /^m$|masculin|\bmale\b|homem/i.test(vr) ? 'm' : /^f$|feminin|female|mulher/i.test(vr) ? 'f' : undefined;
