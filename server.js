@@ -12,6 +12,7 @@ const { serve } = require('inngest/express');
 const { inngest } = require('./inngest/client');
 const { generateSong } = require('./inngest/functions/generateSong');
 const { regenerateEditedSong } = require('./inngest/functions/regenerateEditedSong');
+const { recoverySms } = require('./inngest/functions/recoverySms');
 
 // ═══ Helpers compartilhados (lib/) — evita dependência circular ═══
 const { supaFetch } = require('./lib/supabase');
@@ -170,7 +171,7 @@ app.get('/health', (req, res) => {
 // ═══ Inngest handler — recebe webhooks do Inngest Cloud ═══
 app.use('/api/inngest', serve({
   client: inngest,
-  functions: [generateSong, regenerateEditedSong],
+  functions: [generateSong, regenerateEditedSong, recoverySms],
 }));
 
 process.on('uncaughtException', (err) => console.error('\u26a0\ufe0f Uncaught:', err.message));
@@ -232,12 +233,10 @@ app.listen(PORT, '0.0.0.0', () => {
     const { startRecoveryEmailCron } = require('./lib/recoveryEmailCron');
     startRecoveryEmailCron();
   } catch (err) { console.error('[recoveryCron] falha ao iniciar (ignorado):', err.message); }
-  // Cron SMS (modo produção forward-only, capado). DESLIGADO por padrão
-  // (SMS_CRON_ENABLED!=true). Só envia com SMS_CRON_SINCE setado (anti-blast).
-  try {
-    const { startSmsCron } = require('./lib/smsCron');
-    startSmsCron();
-  } catch (err) { console.error('[smsCron] falha ao iniciar (ignorado):', err.message); }
+  // ❌ SMS por CRON REMOVIDO (28/ago) — causou o incidente do envio em lote.
+  // A recuperação por SMS agora é POR EVENTO/PEDIDO (Inngest recoverySms):
+  // prévia pronta → espera 7min → 1 SMS individual se não pagou. A ENTREGA
+  // continua instantânea no webhook de pagamento (lib/sms.deliverSmsOnPaid).
   // Cron CAPI Monitor — rede de segurança pra Meta CAPI. Varre orders pagas das últimas 24h
   // sem meta_capi_sent e reenvia o Purchase. Cobre falhas do webhook AbacatePay, restart no
   // exato momento do pagamento, token vazio, etc. Default ON em prod.
