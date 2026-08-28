@@ -181,10 +181,12 @@ const regenerateEditedSong = inngest.createFunction(
 
     // ═══ STEP 4: grava as versões NOVAS (mantém as antigas em prev_audio_urls) ═══
     await step.run('save-new-versions', async () => {
-      // Link PERMANENTE (cdn1) — nunca expira. Ver lib/sunoApi.clipCdnUrl.
+      // 🚨 28/ago/2026: cdn1 exige URL assinada (MissingKey) e está quebrado — nem
+      // de fallback serve. Guardamos a URL tocável da API (tempfile.aiquickdraw,
+      // preferida em getTaskStatus). Ver reference_suno_cdn_missingkey.
       const patch = {
-        original_audio_url: clipCdnUrl(best.id) || best.audio_url,
-        full_audio_urls: completed.map(c => clipCdnUrl(c.id) || c.audio_url).filter(Boolean),
+        original_audio_url: best.audio_url,
+        full_audio_urls: completed.map(c => c.audio_url).filter(Boolean),
         suno_clip_ids: completed.map(c => c.id),
         edit_status: 'done',
         error_message: null,
