@@ -14,23 +14,29 @@ const { inngest } = require('../inngest/client');
 
 const router = express.Router();
 
-// GET /s/:id — link curto do SMS: marca o CLIQUE (sms_clicked_at) e redireciona
-// pra pagina certa. Nao pago -> /finalizar/{id}?src=sms · Pago -> /p/{id}?src=sms.
-// O <LINK> da TeleSegNet aponta pra ca → rastreamos quem clicou POR PESSOA.
+// GET /s/:id — link curto do SMS: marca o REDIRECT e manda pra pagina certa.
+// Nao pago -> /finalizar/{id}?src=sms · Pago -> /p/{id}?src=sms.
+// Aceita 2 formatos no :id:
+//   • UUID do pedido            (compat com os links antigos da TeleSegNet)
+//   • sms_short_code (5-10 alnum) — encurtador PROPRIO (dominio curto lcantada.com)
+// Assim lcantada.com/s/{code} vira o link curto e continuamos rastreando o clique.
 router.get('/s/:id', async (req, res) => {
   const SITE = (process.env.FRONTEND_URL || 'https://app.lembrancacantada.com').replace(/\/+$/, '');
-  const id = String(req.params.id || '');
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return res.redirect(302, SITE);
+  const param = String(req.params.id || '');
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(param);
+  const isCode = /^[A-Za-z0-9]{5,10}$/.test(param);
+  if (!isUuid && !isCode) return res.redirect(302, SITE);
   try {
-    const rows = await supaFetch('GET', `orders?id=eq.${id}&select=id,status,paid_at,sms_redirected_at`);
+    const filter = isUuid ? `id=eq.${param}` : `sms_short_code=eq.${encodeURIComponent(param)}`;
+    const rows = await supaFetch('GET', `orders?${filter}&select=id,status,paid_at,sms_redirected_at`);
     const o = Array.isArray(rows) && rows[0];
     if (!o) return res.redirect(302, SITE);
     // Marca só o REDIRECT (todo acesso ao /s, INCLUI bot/scanner de link). O clique
     // REAL é o beacon /api/sms/click-confirm (só dispara quando a PÁGINA renderiza
     // no navegador). Bot pega o 302 aqui, mas não carrega a página → não conta clique.
-    if (!o.sms_redirected_at) supaFetch('PATCH', `orders?id=eq.${id}`, { sms_redirected_at: new Date().toISOString() }).catch(() => {});
+    if (!o.sms_redirected_at) supaFetch('PATCH', `orders?id=eq.${o.id}`, { sms_redirected_at: new Date().toISOString() }).catch(() => {});
     const paid = o.paid_at || ['paid', 'delivered'].includes(String(o.status || '').toLowerCase());
-    return res.redirect(302, paid ? `${SITE}/p/${id}?src=sms` : `${SITE}/finalizar/${id}?src=sms`);
+    return res.redirect(302, paid ? `${SITE}/p/${o.id}?src=sms` : `${SITE}/finalizar/${o.id}?src=sms`);
   } catch (e) { return res.redirect(302, SITE); }
 });
 
