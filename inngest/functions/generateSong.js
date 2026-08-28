@@ -740,6 +740,21 @@ const generateSong = inngest.createFunction(
       // Cliente do plano musica (R$19,90) nao recebe video em hipotese nenhuma.
     });
 
+    // ═══ Agenda SMS de RECUPERAÇÃO (por pedido, sem cron) ═══
+    // Igual ao e-mail: prévia pronta → dispara evento → a função recoverySms
+    // espera 7min e, se o cliente NÃO pagou, manda 1 SMS individual. Idempotente
+    // (a própria recoverySms recheca paid_at + sms_sent_at antes de enviar).
+    if (d.phone && d.orderId) {
+      await step.run('agenda-sms-recuperacao', async () => {
+        const rows = await supaFetch('GET', `orders?id=eq.${d.orderId}&select=paid_at,status`);
+        const o = rows && rows[0];
+        const paid = o && (o.paid_at || ['paid', 'delivered'].includes(String(o.status || '').toLowerCase()));
+        if (paid) return { scheduled: false, reason: 'ja_pago' };
+        await inngest.send({ name: 'sms/recovery.scheduled', data: { orderId: d.orderId } });
+        return { scheduled: true };
+      });
+    }
+
     // ═══ STEP 6 (condicional): Webhook N8N — NÃO-BLOQUEANTE + gate Meta-safe ═══
     // CRÍTICO: só envia WhatsApp se cliente JÁ contactou Bia (janela 24h aberta)
     // Senão marca pending_delivery=true — N8N entrega quando cliente mandar msg
