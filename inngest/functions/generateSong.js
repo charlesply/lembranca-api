@@ -650,27 +650,30 @@ const generateSong = inngest.createFunction(
     // Salvar audio original no Supabase
     if (d.orderId) {
       await step.run('save-original', async () => {
-        // Guarda o link PERMANENTE (cdn1.suno.ai/{id}.mp3) — o audio_url da API é
-        // tempfile temporário e expira em ~2 semanas. Fallback pro audio_url só se
-        // faltar o id do clipe. Ver lib/sunoApi.clipCdnUrl.
-        const fulls = completedClips.map(c => clipCdnUrl(c.id) || c.audio_url).filter(Boolean);
+        // 🚨 28/ago/2026: cdn1.suno.ai passou a exigir URL assinada (MissingKey) e
+        // está COMPLETAMENTE quebrado — não serve nem de fallback (só gravaria um
+        // link garantido-morto). Guardamos a URL TOCÁVEL que a API devolve
+        // (tempfile.aiquickdraw.com, já preferida em getTaskStatus). ⚠️ tempfile
+        // expira ~2 semanas — durabilidade de longo prazo depende de re-hospedar
+        // (pendente). Ver reference_suno_cdn_missingkey / lib/sunoApi._pickPlayableUrl.
+        const fulls = completedClips.map(c => c.audio_url).filter(Boolean);
         await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
           status: 'generating',
-          original_audio_url: clipCdnUrl(bestClip.id) || bestClip.audio_url,
+          original_audio_url: bestClip.audio_url,
           suno_clip_ids: completedClips.map(c => c.id),
           full_audio_urls: fulls,
           final_lyrics: lyrics || null,
         });
-        console.log(`[Inngest] ✅ Original salvo (cdn1): ${(fulls[0] || '').substring(0, 60)}...`);
+        console.log(`[Inngest] ✅ Original salvo (tempfile): ${(fulls[0] || '').substring(0, 60)}...`);
       });
     }
 
-    // ═══ STEP 4: Prévia = URL PERMANENTE da música inteira (SEM corte 0:50) ═══
+    // ═══ STEP 4: Prévia = URL da música inteira (SEM corte 0:50) ═══
     // Decisão do dono (17/jul): larga o arquivo cortado. A prévia é a PRÓPRIA
-    // música (link permanente cdn1.suno.ai/{id}.mp3), e o teto de 0:50 é feito
+    // música (URL tocável da API — tempfile.aiquickdraw), e o teto de 0:50 é feito
     // no PLAYER (client-side) em toda tela de prévia NÃO-paga. Vantagem: entrega
     // instantânea (sem passo de ffmpeg) e preview_audio_url nunca fica sem link.
-    const previewUrl = clipCdnUrl(bestClip.id) || bestClip.audio_url;
+    const previewUrl = bestClip.audio_url;
     console.log(`[Inngest/Preview] ✅ Prévia = full permanente: ${(previewUrl || '').substring(0, 60)}...`);
 
     // ═══ STEP 5: Atualizar Supabase → preview_sent ═══
