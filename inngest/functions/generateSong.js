@@ -648,10 +648,11 @@ const generateSong = inngest.createFunction(
     }
 
     // Salvar audio original no Supabase — FASE 4 (R2, durabilidade permanente).
-    // Sobe cada clip pro Cloudflare R2 (cdn.lcantada.com) e grava ESSA URL, que
-    // não expira. Se R2 off (R2_ENABLED!=true) ou qualquer falha → mantém a URL
-    // tempfile (fallback) — comportamento antigo intacto, NUNCA quebra a geração.
-    // Resolve tempfile(14d) + cdn1(MissingKey). Ver reference_suno_cdn_missingkey.
+    // 🚨 R2 OBRIGATÓRIO (decisão do dono 29/ago): sobe cada clip pro Cloudflare R2
+    // (cdn.lcantada.com) e grava SEMPRE essa URL. SEM fallback tempfile — r2.uploadClip
+    // re-tenta e ESTOURA se não subir, fazendo o Inngest re-executar este step até
+    // ficar no R2. Assim o pedido NUNCA recebe tempfile (que expira em 14d).
+    // Resolve tempfile(14d) + cdn1(MissingKey). Ver reference_r2_hospedagem.
     let durablePreview = bestClip.audio_url;
     if (d.orderId) {
       const saved = await step.run('save-original', async () => {
@@ -659,10 +660,10 @@ const generateSong = inngest.createFunction(
         const urlMap = {};
         for (const c of completedClips) {
           if (!c.audio_url) continue;
-          urlMap[c.id] = (await r2.uploadClip(c.id, c.audio_url)) || c.audio_url;
+          urlMap[c.id] = await r2.uploadClip(c.id, c.audio_url); // R2 ou throw (sem tempfile)
         }
         const fulls = completedClips.map(c => urlMap[c.id]).filter(Boolean);
-        const original = urlMap[bestClip.id] || bestClip.audio_url;
+        const original = urlMap[bestClip.id];
         await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
           status: 'generating',
           original_audio_url: original,
@@ -670,8 +671,7 @@ const generateSong = inngest.createFunction(
           full_audio_urls: fulls,
           final_lyrics: lyrics || null,
         });
-        const onR2 = original.includes('lcantada.com');
-        console.log(`[Inngest] ✅ Original salvo (${onR2 ? 'R2 durável' : 'tempfile'}): ${(fulls[0] || '').substring(0, 60)}...`);
+        console.log(`[Inngest] ✅ Original salvo (R2): ${(fulls[0] || '').substring(0, 60)}...`);
         return { preview: original };
       });
       if (saved && saved.preview) durablePreview = saved.preview;
