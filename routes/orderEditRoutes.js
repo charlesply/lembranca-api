@@ -98,16 +98,13 @@ router.post('/api/order/:id/edit/confirm', async (req, res) => {
     // gente PRESERVA o estilo original (comportamento seguro por padrão).
     const stylePicked = req.body?.stylePicked === true;
 
-    // Snapshot das versões ATUAIS → prev_audio_urls. Preferimos montar do
-    // suno_clip_ids como link PERMANENTE (cdn1) — assim as originais NÃO expiram
-    // no painel (o full_audio_urls pode ser um tempfile antigo já morto). Fallback
-    // pro full_audio_urls/original só se não tiver clip id.
-    const clipIds = Array.isArray(o.suno_clip_ids) ? o.suno_clip_ids.filter(Boolean) : [];
-    const curVersions = clipIds.length
-      ? clipIds.map(clipCdnUrl).filter(Boolean)
-      : ((Array.isArray(o.full_audio_urls) && o.full_audio_urls.filter(Boolean).length)
-          ? o.full_audio_urls.filter(Boolean)
-          : (o.original_audio_url ? [o.original_audio_url] : []));
+    // Snapshot das versões ATUAIS → prev_audio_urls. 🚨 28/ago/2026: NÃO montamos
+    // mais do clip id como cdn1 — esse host quebrou (MissingKey). Usamos o
+    // full_audio_urls atual (que agora é tempfile.aiquickdraw tocável); fallback
+    // pro original_audio_url. ⚠️ tempfile expira ~2 semanas.
+    const curVersions = (Array.isArray(o.full_audio_urls) && o.full_audio_urls.filter(Boolean).length)
+      ? o.full_audio_urls.filter(Boolean)
+      : (o.original_audio_url ? [o.original_audio_url] : []);
     const prev = (Array.isArray(o.prev_audio_urls) && o.prev_audio_urls.length) ? o.prev_audio_urls : curVersions;
 
     const patch = {
