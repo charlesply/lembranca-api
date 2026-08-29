@@ -65,7 +65,7 @@ router.post('/api/webhooks/sunoapi', express.json({ limit: '2mb' }), async (req,
     if (!taskId) return;
 
     // Acha o order pelo taskId
-    const rows = await supaFetch('GET', `orders?suno_task_id=eq.${taskId}&select=id,status`);
+    const rows = await supaFetch('GET', `orders?suno_task_id=eq.${taskId}&select=id,status,full_audio_urls`);
     const o = Array.isArray(rows) && rows[0];
     if (!o) {
       console.warn(`[sunoapi/webhook] taskId ${taskId.slice(0,12)} sem order — ignorando`);
@@ -81,18 +81,24 @@ router.post('/api/webhooks/sunoapi', express.json({ limit: '2mb' }), async (req,
     // dependia do Inngest pra preencher — quando o Inngest falhava em ler o
     // status (Suno API mente FAILED), a order ficava sem URL eternamente.
     //
-    // Construir cdn1.suno.ai/{id}.mp3 a partir do clip ID e DETERMINISTICO:
-    // sempre funciona se a musica foi de fato gerada (testado historicamente).
+    // 🚨 28/ago/2026: tracksToUrls agora devolve a URL TOCÁVEL (tempfile.aiquickdraw),
+    // NÃO mais cdn1 (que quebrou com MissingKey). E só sobrescrevemos full_audio_urls
+    // se o que já está no DB estiver VAZIO ou com host assinado/quebrado — assim o
+    // callback não regride pra pior o que o generateSong (polling) já gravou bom.
     if (tracks.length && (callbackType === 'complete' || callbackType === 'first')) {
       try {
         const { tracksToUrls } = require('../lib/sunoFallback');
         const { urls, ids } = tracksToUrls(tracks);
-        if (urls.length) {
+        const cur = Array.isArray(o.full_audio_urls) ? o.full_audio_urls : [];
+        const curBad = cur.length === 0 || cur.some(u => /cdn1\.suno\.ai|musicfile\.removeai\.ai/i.test(u));
+        const newGood = urls.length && urls.every(u => !/cdn1\.suno\.ai|musicfile\.removeai\.ai/i.test(u));
+        // Só grava se o atual está ruim/vazio E o novo não é pior (não-assinado).
+        if (urls.length && curBad && (newGood || cur.length === 0)) {
           patch.full_audio_urls = urls;
           patch.original_audio_url = urls[0];
         }
         if (ids.length) patch.suno_clip_ids = ids;
-        console.log(`[sunoapi/webhook] 💾 ${o.id.slice(0,8)} salvando ${urls.length} URL(s) + ${ids.length} clipId(s)`);
+        console.log(`[sunoapi/webhook] 💾 ${o.id.slice(0,8)} ${patch.full_audio_urls ? 'salvando '+urls.length+' URL(s)' : 'mantendo URLs atuais'} + ${ids.length} clipId(s)`);
       } catch (e) {
         console.error('[sunoapi/webhook] falha em extrair URLs:', e.message);
       }
@@ -496,6 +502,35 @@ router.post('/api/webhooks/resend', async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error('[webhook resend] erro:', e.message);
+    res.status(500).json({ error: 'erro interno' });
+  }
+});
+
+// ═══ FOCUS NFE — resultado da NFS-e ═══
+// A emissão é assíncrona: o POST devolve "processando_autorizacao" e a prefeitura
+// responde depois. A Focus chama este endpoint quando a nota vira autorizado /
+// erro_autorizacao / cancelado. Sem isso, só saberíamos pelo polling do
+// `nfse_backlog.js --status`.
+// Protegido por token na query (?token=...) — a Focus não assina o payload.
+// Cadastrar em: POST /v2/hooks {event:"nfse", url:"https://suno-api-novo.bvph.uk/api/webhooks/focusnfe?token=..."}
+router.post('/api/webhooks/focusnfe', async (req, res) => {
+  try {
+    const esperado = process.env.FOCUS_NFE_WEBHOOK_TOKEN || '';
+    if (esperado && req.query.token !== esperado) return res.status(401).json({ error: 'token' });
+
+    const body = req.body || {};
+    const ref = body.ref || body.referencia;
+    if (!ref) return res.status(200).json({ ok: false, skipped: 'sem_ref' });
+
+    // ref = 'lc-<orderId>' (ver lib/focusNfe.refDoPedido)
+    const orderId = String(ref).replace(/^lc-/, '');
+    const { extrairCampos, salvarStatusNoPedido } = require('../lib/focusNfe');
+    const campos = extrairCampos(body);
+    await salvarStatusNoPedido(orderId, campos);
+    console.log('[webhook focusnfe]', ref, '→', campos.status, campos.numero ? `nº ${campos.numero}` : '');
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[webhook focusnfe] erro:', e.message);
     res.status(500).json({ error: 'erro interno' });
   }
 });
