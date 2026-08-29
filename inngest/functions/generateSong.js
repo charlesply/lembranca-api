@@ -647,25 +647,34 @@ const generateSong = inngest.createFunction(
       throw new NonRetriableError(`Nenhum clip gerado com sucesso: ${errorMsgs}`);
     }
 
-    // Salvar audio original no Supabase
+    // Salvar audio original no Supabase — FASE 4 (R2, durabilidade permanente).
+    // Sobe cada clip pro Cloudflare R2 (cdn.lcantada.com) e grava ESSA URL, que
+    // não expira. Se R2 off (R2_ENABLED!=true) ou qualquer falha → mantém a URL
+    // tempfile (fallback) — comportamento antigo intacto, NUNCA quebra a geração.
+    // Resolve tempfile(14d) + cdn1(MissingKey). Ver reference_suno_cdn_missingkey.
+    let durablePreview = bestClip.audio_url;
     if (d.orderId) {
-      await step.run('save-original', async () => {
-        // 🚨 28/ago/2026: cdn1.suno.ai passou a exigir URL assinada (MissingKey) e
-        // está COMPLETAMENTE quebrado — não serve nem de fallback (só gravaria um
-        // link garantido-morto). Guardamos a URL TOCÁVEL que a API devolve
-        // (tempfile.aiquickdraw.com, já preferida em getTaskStatus). ⚠️ tempfile
-        // expira ~2 semanas — durabilidade de longo prazo depende de re-hospedar
-        // (pendente). Ver reference_suno_cdn_missingkey / lib/sunoApi._pickPlayableUrl.
-        const fulls = completedClips.map(c => c.audio_url).filter(Boolean);
+      const saved = await step.run('save-original', async () => {
+        const r2 = require('../../lib/r2');
+        const urlMap = {};
+        for (const c of completedClips) {
+          if (!c.audio_url) continue;
+          urlMap[c.id] = (await r2.uploadClip(c.id, c.audio_url)) || c.audio_url;
+        }
+        const fulls = completedClips.map(c => urlMap[c.id]).filter(Boolean);
+        const original = urlMap[bestClip.id] || bestClip.audio_url;
         await supaFetch('PATCH', `orders?id=eq.${d.orderId}`, {
           status: 'generating',
-          original_audio_url: bestClip.audio_url,
+          original_audio_url: original,
           suno_clip_ids: completedClips.map(c => c.id),
           full_audio_urls: fulls,
           final_lyrics: lyrics || null,
         });
-        console.log(`[Inngest] ✅ Original salvo (tempfile): ${(fulls[0] || '').substring(0, 60)}...`);
+        const onR2 = original.includes('lcantada.com');
+        console.log(`[Inngest] ✅ Original salvo (${onR2 ? 'R2 durável' : 'tempfile'}): ${(fulls[0] || '').substring(0, 60)}...`);
+        return { preview: original };
       });
+      if (saved && saved.preview) durablePreview = saved.preview;
     }
 
     // ═══ STEP 4: Prévia = URL da música inteira (SEM corte 0:50) ═══
@@ -673,7 +682,7 @@ const generateSong = inngest.createFunction(
     // música (URL tocável da API — tempfile.aiquickdraw), e o teto de 0:50 é feito
     // no PLAYER (client-side) em toda tela de prévia NÃO-paga. Vantagem: entrega
     // instantânea (sem passo de ffmpeg) e preview_audio_url nunca fica sem link.
-    const previewUrl = bestClip.audio_url;
+    const previewUrl = durablePreview; // R2 (durável) se subiu, senão tempfile
     console.log(`[Inngest/Preview] ✅ Prévia = full permanente: ${(previewUrl || '').substring(0, 60)}...`);
 
     // ═══ STEP 5: Atualizar Supabase → preview_sent ═══
