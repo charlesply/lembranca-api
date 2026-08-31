@@ -216,8 +216,13 @@ const generateSong = inngest.createFunction(
         const ativas = await step.run(`gate-check-${g}`, async () => {
           try {
             const since = new Date(Date.now() - GATE_WIN_MIN * 60 * 1000).toISOString();
+            // "Ativa" = submeteu (clip_ids) e ainda SEM PRÉVIA AO VIVO (stream_preview_url).
+            // Antes usava preview_audio_url (o COMPLETE), mas a Fase 4 (R2) atrasa esse
+            // campo (espera o upload) → a música ficava ocupando vaga mesmo já streamando,
+            // saturando o gate em pico e atrasando a prévia dos novos. Liberar no stream
+            // (a Suno já entregou o áudio) mantém a proteção da geração sem esse atraso.
             const rows = await supaFetch('GET',
-              `orders?status=in.(generating,producing)&suno_clip_ids=not.is.null&preview_audio_url=is.null&created_at=gte.${since}&id=neq.${d.orderId}&select=id`);
+              `orders?status=in.(generating,producing)&suno_clip_ids=not.is.null&stream_preview_url=is.null&created_at=gte.${since}&id=neq.${d.orderId}&select=id`);
             return Array.isArray(rows) ? rows.length : 0;
           } catch (e) { return 0; } // erro de leitura NÃO bloqueia a geração
         });
@@ -439,8 +444,8 @@ const generateSong = inngest.createFunction(
       // Wait progressivo: fast → medium → slow
       if (attempt > 0) {
         let waitSecs;
-        if (attempt < 3)                      waitSecs = `${15 + attempt * 5}s`;  // 20s, 25s, 30s
-        else if (attempt < PHASE_BOUNDARY_MEDIUM) waitSecs = '30s';               // Phase 1: 30s × 33 = ~16 min
+        if (attempt < 6)                      waitSecs = '8s';                    // primeiros 6 polls a 8s (poll 0 é imediato): pega a prévia AO VIVO ~15-20s mais cedo (a Suno expõe o stream em ~15-40s)
+        else if (attempt < PHASE_BOUNDARY_MEDIUM) waitSecs = '30s';               // Phase 1: 30s × 30 = ~15 min
         else if (attempt < PHASE_BOUNDARY_SLOW)   waitSecs = '3m';                // Phase 2: 3min × 10 = 30 min
         else                                      waitSecs = '15m';               // Phase 3: 15min × 5 = 75 min
         await step.sleep(`wait-clips-${attempt}`, waitSecs);
