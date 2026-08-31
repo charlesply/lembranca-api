@@ -195,42 +195,14 @@ const generateSong = inngest.createFunction(
       return generatedLyrics;
     });
 
-    // ═══ PORTÃO DE FILA — máx N músicas ATIVAS no Suno (refill ao terminar) ═══
-    // O concurrency:N do Inngest NÃO segura "in-flight": o polling usa step.sleep, que libera
-    // a vaga (Inngest não conta runs dormindo). Este portão segura de verdade: antes de submeter,
-    // espera até haver < N músicas ATIVAS. "Ativa" = já submeteu (suno_clip_ids != null) e ainda
-    // sem prévia. Quem está esperando na fila NÃO tem clip_ids → não conta um ao outro (sem
-    // deadlock). Janela recente + teto de tentativas evita travar pra sempre. fail-open.
-    //
-    // Default adaptativo igual ao concurrency do Inngest:
-    //   cookie → 2 (anti-bot do Suno);  api/auto → 10 (sunoapi.org aguenta 20 req/10s).
-    // Override via env SUNO_GATE_MAX se quiser ajustar runtime.
-    {
-      const GATE_MAX = parseInt(
-        process.env.SUNO_GATE_MAX || (_SUNO_POLICY === 'cookie' ? '2' : '10'),
-        10,
-      );
-      const GATE_TRIES = parseInt(process.env.SUNO_GATE_TRIES || '40', 10);       // 40 x 30s = 20min teto
-      const GATE_WIN_MIN = parseInt(process.env.SUNO_GATE_WINDOW_MIN || '30', 10); // ignora presos > 30min
-      for (let g = 0; g < GATE_TRIES; g++) {
-        const ativas = await step.run(`gate-check-${g}`, async () => {
-          try {
-            const since = new Date(Date.now() - GATE_WIN_MIN * 60 * 1000).toISOString();
-            // "Ativa" = submeteu (clip_ids) e ainda SEM PRÉVIA AO VIVO (stream_preview_url).
-            // Antes usava preview_audio_url (o COMPLETE), mas a Fase 4 (R2) atrasa esse
-            // campo (espera o upload) → a música ficava ocupando vaga mesmo já streamando,
-            // saturando o gate em pico e atrasando a prévia dos novos. Liberar no stream
-            // (a Suno já entregou o áudio) mantém a proteção da geração sem esse atraso.
-            const rows = await supaFetch('GET',
-              `orders?status=in.(generating,producing)&suno_clip_ids=not.is.null&stream_preview_url=is.null&created_at=gte.${since}&id=neq.${d.orderId}&select=id`);
-            return Array.isArray(rows) ? rows.length : 0;
-          } catch (e) { return 0; } // erro de leitura NÃO bloqueia a geração
-        });
-        if (ativas < GATE_MAX) break;
-        console.log(`[Inngest] 🚦 Portão: ${ativas} ativa(s) no Suno (>= ${GATE_MAX}) — order ${d.orderId} aguardando vaga (tentativa ${g + 1}/${GATE_TRIES})`);
-        await step.sleep(`gate-wait-${g}`, '30s');
-      }
-    }
+    // ═══ PORTÃO DE FILA REMOVIDO (31/ago) — otimização de latência da prévia ═══
+    // O gate manual custava 1 step.run do Inngest por geração (~overhead) e NUNCA
+    // segurava de fato: além de `concurrency:30` + `{limit:1, key:orderId}` já
+    // protegerem a Suno, a métrica dele contava `suno_clip_ids` — que só é gravado
+    // no COMPLETE, não no submit — então a contagem era sempre ~0. Removê-lo tira
+    // um passo do caminho crítico até o submit, acelerando a prévia ao vivo.
+    // (Se um dia precisar limitar in-flight de verdade, fazer via concurrency do
+    // Inngest ou um gate baseado em `suno_task_id` + `stream_preview_url=is.null`.)
 
     // ═══ STEP 2: Suno gera clips (SEM esperar — retorno imediato) ═══
     //
