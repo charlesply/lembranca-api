@@ -134,6 +134,9 @@ router.post('/api/order', async (req, res) => {
       src: _clip(b.src, 100),
       // Kwai click id (S2S/Event API atribui por ele — capturado da URL ?clickid=)
       kwai_clickid: _clip(b.kwai_clickid, 200),
+      // Google gclid (capturado 1º toque no front) — casa a CONVERSAO OFFLINE
+      // importada pro Google Ads (venda de PIX que paga no banco e nao volta).
+      gclid: _clip(b.gclid, 200),
       status: 'generating', // SEMPRE server-side; cliente nao escolhe
     };
     // Insercao defensiva: se a coluna `customer_email` ainda nao existir no DB
