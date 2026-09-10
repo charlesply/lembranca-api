@@ -34,6 +34,7 @@ const orderWriteRoutes = require('./routes/orderWriteRoutes');
 const orderEditRoutes = require('./routes/orderEditRoutes');
 const recoveryRoutes = require('./routes/recoveryRoutes');
 const promoRoutes = require('./routes/promoRoutes');
+const gadsConversionsRoutes = require('./routes/gadsConversionsRoutes');
 
 // Multer config: aceita audio ate 25MB (limite do Whisper)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -61,6 +62,7 @@ app.use(orderWriteRoutes);
 app.use(orderEditRoutes);
 app.use(recoveryRoutes);
 app.use(promoRoutes);
+app.use(gadsConversionsRoutes);
 
 const PORT = process.env.PORT || 3000;
 const SUNO_COOKIE = process.env.SUNO_COOKIE || '';
