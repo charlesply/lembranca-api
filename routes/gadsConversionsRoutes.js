@@ -81,6 +81,11 @@ router.get('/api/gads/conversions.csv', async (req, res) => {
   const NOME = process.env.GOOGLE_ADS_CONVERSAO_NOME || 'Compra PIX (importada)';
   const DIAS = Number(process.env.GADS_CSV_DIAS || 30);
 
+  // Log de ACESSO (quem puxou o CSV — pra confirmar que o Google importa de fato,
+  // já que o proxy/backend não logam GETs de sucesso). UA do Google = "Google-Ads..."
+  const _ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '?';
+  console.log(`[gads/conversions.csv] ACESSO ${new Date().toISOString()} ip=${_ip} ua="${req.headers['user-agent'] || '?'}"`);
+
   try {
     const desde = new Date(Date.now() - DIAS * 864e5).toISOString();
     const linhas = [];
@@ -108,6 +113,7 @@ router.get('/api/gads/conversions.csv', async (req, res) => {
     res.set('Content-Type', 'text/csv; charset=utf-8');
     res.set('Cache-Control', 'no-store, max-age=0'); // Google busca 1×/dia; nada de CDN velho
     res.set('Content-Disposition', 'attachment; filename="conversoes.csv"');
+    console.log(`[gads/conversions.csv] OK → ${linhas.length} conversoes entregues`);
     return res.status(200).send(CABECALHO + '\n' + linhas.join('\n') + (linhas.length ? '\n' : ''));
   } catch (e) {
     console.error('[gads/conversions.csv] erro:', e.message);
